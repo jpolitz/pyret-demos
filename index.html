@@ -16,6 +16,9 @@
       a.card:hover { border-color: var(--accent); background:#f8fbff; }
       a.card h2 { font-size:16px; margin:0 0 4px; color: var(--accent); }
       a.card p { margin:0; color: var(--dim); font-size:13.5px; }
+      .banner { border:1px solid #edd9ac; background:#fdf4e3; color:#6b4e05;
+                border-radius:8px; padding:12px 14px; margin:0 0 22px; font-size:13.5px; }
+      .banner strong { color:#8a6100; }
       code { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px;
              background: var(--panel); padding:1px 5px; border-radius:3px; }
       footer { margin-top:32px; padding-top:16px; border-top:1px solid var(--line);
@@ -25,6 +28,13 @@
   <body>
     <h1>Pyret experiment demos</h1>
     <p class="sub">Static snapshots. Everything runs in your browser; nothing is sent anywhere.</p>
+
+    <div class="banner">
+      <strong>These are experimental and largely AI-generated demos.</strong>
+      They come from unmerged experiment branches, not from released Pyret. Treat anything
+      here &mdash; code, measurements, and claims alike &mdash; as a research sketch rather
+      than a supported tool.
+    </div>
 
     <a class="card" href="./lezer/">
       <h2>Lezer vs RNGLR &mdash; live parser comparison</h2>
@@ -45,9 +55,17 @@
          <code>await</code>s in front of you. From the Promise/async backend experiment.</p>
     </a>
 
+    <a class="card" href="https://github.com/jpolitz/pyret-lang/releases/tag/pyret-cli-2026-08-15">
+      <h2>Pyret CLI &mdash; single-executable downloads</h2>
+      <p>Standalone <code>pyret</code> binaries for macOS (arm64/x64), Linux (x64/arm64) and
+         Windows &mdash; no install, no Node. From the <code>cli-binary</code> experiment.
+         Only the macOS arm64 build has been run; the rest are cross-compiled.</p>
+    </a>
+
     <footer>
       Built from <a href="https://github.com/jpolitz/pyret-lang">jpolitz/pyret-lang</a>
-      branches <code>lezer</code> and <code>interp-backend</code>.
+      (<code>lezer</code>, <code>interp-backend</code>, <code>cli-binary</code>) and
+      <a href="https://github.com/jpolitz/pyret">jpolitz/pyret</a> (<code>promise-rederive</code>).
       Each demo directory carries a README with its provenance and rebuild steps.
     </footer>
   </body>
