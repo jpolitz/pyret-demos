@@ -1,0 +1,416 @@
+<!doctype html>
+<!--
+  backends.html -- a static, single-page comparison of Pyret's two stack
+  backends: the cont (trampoline) backend and the Promise/async backend.
+
+  Every edit in the definitions window is compiled TWICE from the same source
+  -- once with the default cont backend, once with `stackBackend = promise` --
+  and the two emitted JS programs are shown side by side. Nothing is run, and
+  nothing is sent anywhere: this is the same compile the editor would do on
+  Run, stopped one step earlier, at the code the two backends would execute.
+
+  HOW IT WORKS, and why it needs no server of its own:
+
+  - The frame is `editor.embed.html`, templated with a .env that sets
+    CPO_COMPILER=ts-promise (so the page loads the TS compiler bundle plus the
+    Promise-backend jarr). The host half of the embed protocol -- pyret-init ->
+    gainControl + reset, then `change` events carrying editorContents -- is
+    inlined below, so this file has no dependency beyond the editor artifact
+    sitting next to it.
+
+  - That iframe is SAME-ORIGIN, and has already loaded everything a compile
+    needs: window.PyretTSCompiler (the TS compiler), window.THE_RUNTIME (whose
+    "staticModules" param is the precompiled builtin trove), and the
+    ts-compiler-lib module inside the jarr, whose makeBuiltinSupport /
+    makeFinderFactory turn that trove into Loadables and a module finder. So
+    this page borrows the editor's compiler rather than shipping a second one.
+
+  - Both compiles go through compileWorklistKnownModules (the builtins arrive
+    as already-compiled Loadables, so only definitions:// is ever compiled) and
+    then compileProgramWith. With collectAll set, onCompile hands back the
+    phase trace, whose LAST phase ("Generated JS") holds the emitted code.
+
+  WHAT TO LOOK AT
+
+  - The promise pane's `async function` / `await` / fuel checks are the whole
+    backend: every call is awaited unless the compiler can prove the callee
+    flat. The cont pane instead splits functions into resumable pieces.
+  - The phase counts differ (cont ~15, promise ~22): the extra phases are the
+    optimization campaign that was built for the promise backend -- operator
+    weakening, direct field tagging, type-flow ann elision, tier analysis.
+  - Turn "flatness" off and watch `await` counts jump: that toggle is the
+    optimization that strips async/await machinery from provably-flat calls.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pyret backends: cont vs promise</title>
+<link rel="icon" type="image/png" href="./img/pyret-icon.png" />
+<style>
+  :root {
+    --bg:#fff; --panel:#f6f7f9; --panel2:#eceef2; --line:#d8dce3;
+    --ink:#1b1f24; --dim:#61676f; --faint:#8b929b;
+    --accent:#2b6cb0; --accent-soft:#e4eefb;
+    --good:#1f7a4d; --good-bg:#e7f5ee; --bad:#b32d2e; --bad-bg:#fdecec;
+    --warn:#8a6100; --warn-bg:#fdf4e3;
+    --cont:#8a6100; --prom:#2b6cb0;
+    --mono:"Fira Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{font:13px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);
+       background:var(--bg);display:flex;flex-direction:column;overflow:hidden}
+  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:7px 12px;
+         border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto}
+  header h1{font-size:14px;font-weight:600;margin:0;white-space:nowrap}
+  header h1 .sub{color:var(--faint);font-weight:400}
+  .spacer{flex:1 1 auto}
+  .opts{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--dim)}
+  .opts label{display:flex;align-items:center;gap:4px;white-space:nowrap;cursor:pointer}
+  .opts input{margin:0}
+  button,select{font:inherit;padding:3px 9px;border:1px solid var(--line);border-radius:4px;
+         background:#fff;color:var(--ink);cursor:pointer}
+  button:hover:not(:disabled){background:var(--accent-soft);border-color:var(--accent)}
+  .pill{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:10px;
+        border:1px solid var(--line);background:#fff;white-space:nowrap}
+  .pill.ok{color:var(--good);background:var(--good-bg);border-color:#b7e0cb}
+  .pill.bad{color:var(--bad);background:var(--bad-bg);border-color:#f2c2c2}
+  .pill.busy{color:var(--warn);background:var(--warn-bg);border-color:#edd9ac}
+
+  #editorPane{flex:0 0 34%;border-bottom:1px solid var(--line);min-height:0}
+  #editorPane iframe{width:100%;height:100%;border:0;display:block}
+
+  main{flex:1 1 auto;display:flex;min-height:0}
+  .col{flex:1 1 50%;min-width:0;display:flex;flex-direction:column}
+  .col+.col{border-left:1px solid var(--line)}
+  .colhead{padding:4px 10px;border-bottom:1px solid var(--line);background:var(--panel);
+           display:flex;gap:8px;align-items:center;flex:0 0 auto;font-size:11px}
+  .colhead .name{font-weight:600}
+  .col.cont .colhead .name{color:var(--cont)}
+  .col.prom .colhead .name{color:var(--prom)}
+  .counts{font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .counts b{color:var(--ink)}
+  pre.js{flex:1 1 auto;overflow:auto;margin:0;padding:8px 10px;font-family:var(--mono);
+         font-size:11px;line-height:1.35;white-space:pre;color:#24303c}
+  .kw-async{background:#dbeafe;border-radius:2px}
+  .kw-await{background:#fde68a;border-radius:2px}
+  .kw-pause{background:#fbcfe8;border-radius:2px}
+  footer{flex:0 0 auto;border-top:1px solid var(--line);background:var(--panel);
+         padding:5px 12px;font-size:11.5px;color:var(--dim)}
+  .phases{font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+  #err{display:none;padding:8px 12px;background:var(--bad-bg);color:var(--bad);
+       font-family:var(--mono);font-size:11px;white-space:pre-wrap;max-height:30%;overflow:auto}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Pyret backends <span class="sub">— cont vs promise, same source</span></h1>
+  <select id="preset" title="Load a program"></select>
+  <div class="opts">
+    <label title="The middle-end (inliner/CSE/LICM). Promise-side only."><input type="checkbox" id="optOptimize" checked> optimize</label>
+    <label title="methodFlatness + tailFlat + importedMethodFlat. Provably-flat calls skip the await; turn it off and the machinery comes back. Most visible on the 'method call' preset."><input type="checkbox" id="optFlat" checked> method flatness</label>
+    <label title="Type-flow annotation elision"><input type="checkbox" id="optAnn" checked> ann elision</label>
+    <label title="Operator weakening"><input type="checkbox" id="optWeaken" checked> op weakening</label>
+  </div>
+  <span id="status" class="pill busy">starting…</span>
+  <span class="spacer"></span>
+  <button id="recompile">Recompile</button>
+</header>
+
+<div id="err"></div>
+
+<div id="editorPane"></div>
+
+<main>
+  <div class="col cont">
+    <div class="colhead">
+      <span class="name">cont</span><span>(trampoline)</span>
+      <span class="spacer"></span>
+      <span class="counts" id="cCounts">—</span>
+    </div>
+    <pre class="js" id="cJs"></pre>
+  </div>
+  <div class="col prom">
+    <div class="colhead">
+      <span class="name">promise</span><span>(async/await)</span>
+      <span class="spacer"></span>
+      <span class="counts" id="pCounts">—</span>
+    </div>
+    <pre class="js" id="pJs"></pre>
+  </div>
+</main>
+
+<footer>
+  <span class="phases" id="phases">—</span>
+  &nbsp;·&nbsp; Both panes are compiled from the editor above, in this page, by the editor's own compiler —
+  nothing is run. <code>async</code>/<code>await</code>/<code>checkPause</code> are highlighted.
+  Toggling <b>method flatness</b> on the <i>method call</i> preset is the clearest beat: 7 awaits / 2 pause
+  checks becomes 8 / 4. On <i>mutual recursion</i> it changes nothing — a letrec cycle can never be flat.
+</footer>
+
+<script>
+"use strict";
+
+var EDITOR_SRC = "./editor.embed.html";
+var DEFS_URI = "definitions://";
+var DEBOUNCE_MS = 400;
+
+// "method call" leads because it is the preset where the method-flatness toggle
+// visibly changes the emitted code. Mutual recursion deliberately does NOT: two
+// functions in a letrec cycle can never be flat (that is what a cycle means), so
+// there is nothing for the optimization to strip -- itself worth seeing.
+var SAMPLES = {
+  "method call": "data Box:\n  | box(v) with:\n    method get(self): self.v end\nend\n\nbox(42).get()\n",
+  "mutual recursion": "fun is-even(n):\n  if n == 0: true else: is-odd(n - 1) end\nend\n\nfun is-odd(n):\n  if n == 0: false else: is-even(n - 1) end\nend\n\nis-even(10)\n",
+  "flat arithmetic": "fun f(x):\n  num-abs(num-max(x, 0)) + 1\nend\n\nf(41)\n",
+  "list fold": "fun total(l):\n  cases (List) l:\n    | empty => 0\n    | link(f, r) => f + total(r)\n  end\nend\n\ntotal([list: 1, 2, 3])\n"
+};
+
+var frame = null, C = null, currentSource = null, debounceTimer = null, token = 0;
+
+function $(id) { return document.getElementById(id); }
+function setStatus(t, cls) { var s = $("status"); s.textContent = t; s.className = "pill " + (cls || ""); }
+function fatal(msg) { var e = $("err"); e.style.display = "block"; e.textContent = msg; setStatus("error", "bad"); }
+function clearErr() { $("err").style.display = "none"; }
+
+/* ---------------- embed protocol, host side ---------------- */
+function makeEditor() {
+  frame = document.createElement("iframe");
+  frame.src = EDITOR_SRC;
+  frame.setAttribute("title", "Pyret editor");
+  $("editorPane").appendChild(frame);
+}
+function post(m) { frame.contentWindow.postMessage(m, "*"); }
+function sendReset(source) {
+  post({ protocol: "pyret", data: { type: "reset", state: JSON.stringify({
+    definitionsAtLastRun: false, interactionsSinceLastRun: [],
+    editorContents: source, replContents: "", messageNumber: 0 }) } });
+}
+window.addEventListener("message", function (message) {
+  if (!frame || message.source !== frame.contentWindow) return;
+  var payload = message.data;
+  if (!payload || payload.protocol !== "pyret") return;
+  if (payload.data && payload.data.type === "pyret-init") {
+    var wanted = new URLSearchParams(location.search).get("preset");
+    var src = SAMPLES[wanted] || SAMPLES[Object.keys(SAMPLES)[0]];
+    post({ type: "gainControl" });
+    sendReset(src);
+    currentSource = src;      // reset installs text without emitting a change
+    bootCompiler();
+    return;
+  }
+  if (payload.state && typeof payload.state.editorContents === "string") {
+    var t = payload.state.editorContents;
+    if (t !== currentSource) { currentSource = t; schedule(); }
+  }
+});
+
+function schedule() {
+  if (debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(function () { debounceTimer = null; compileBoth(); }, DEBOUNCE_MS);
+}
+
+/* ---------------- borrowing the editor's compiler ---------------- */
+function findTsLib(W) {
+  var mods = null;
+  try { mods = W.requirejs("cpo/cpo-builtin-modules").getRealm().instantiated; } catch (e) { mods = null; }
+  if (!mods) mods = W.THE_RUNTIME && W.THE_RUNTIME.modules;
+  if (!mods) return null;
+  var keys = Object.keys(mods);
+  for (var i = 0; i < keys.length; i++) {
+    if (keys[i].indexOf("ts-compiler-lib") === -1) continue;
+    var m = mods[keys[i]];
+    if (m && m.jsmod && typeof m.jsmod.makeBuiltinSupport === "function") return m.jsmod;
+  }
+  return null;
+}
+
+function bootCompiler() {
+  if (C !== null) return;
+  setStatus("loading compiler…", "busy");
+  var tries = 0;
+  var poll = setInterval(function () {
+    tries++;
+    var W = frame.contentWindow, tsLib = null;
+    try { tsLib = (W && W.PyretTSCompiler && W.THE_RUNTIME) ? findTsLib(W) : null; } catch (e) { tsLib = null; }
+    if (!tsLib) {
+      if (tries > 900) { clearInterval(poll);
+        fatal("Could not reach the editor's compiler.\n\nThis page needs editor.embed.html " +
+              "(built with CPO_COMPILER=ts-promise) served from the SAME ORIGIN as this file: " +
+              "it reads window.PyretTSCompiler and window.THE_RUNTIME out of the frame.\n" +
+              "Opening this from file:// will not work."); }
+      return;
+    }
+    clearInterval(poll);
+    var W2 = frame.contentWindow;
+    try {
+      var T = W2.PyretTSCompiler;
+      var support = tsLib.makeBuiltinSupport(W2.THE_RUNTIME.getParam("staticModules"));
+      var makeFinder = tsLib.makeFinderFactory(support, new Map());
+      // makeRepl is used only for makeDefinitionsLocator, which parses the text and
+      // adds the repl's implicit `provide` -- what the editor does to the definitions
+      // window. Nothing here runs, so the executor and realm it wants go untouched.
+      var tsRepl = T.repl.makeRepl({}, support.loadables, {}, { "load-path": "." }, makeFinder);
+      if (typeof T.compileStructs.promise === "undefined") {
+        fatal("This compiler bundle has no promise stack backend " +
+              "(PyretTSCompiler.compileStructs.promise is undefined).");
+        return;
+      }
+      C = { W: W2, T: T, CS: T.compileStructs, CL: T.compileLib,
+            support: support, makeFinder: makeFinder, tsRepl: tsRepl };
+    } catch (e) {
+      fatal("Failed to set up the compiler:\n" + (e && e.stack ? e.stack : String(e)));
+      return;
+    }
+    compileBoth();
+  }, 100);
+}
+
+/* ---------------- compiling ---------------- */
+function optionsFor(usePromise) {
+  var o = Object.assign({}, C.CS.defaultCompileOptions);
+  o.checkMode = false; o.checks = "none"; o.checkAll = false;
+  o.typeCheck = false; o.displayProgress = false;
+  o.collectAll = true;                       // so onCompile receives the phase trace
+  o.log = function () {}; o.logError = function (s) { console.error(s); };
+  if (usePromise) {
+    o.stackBackend = C.CS.promise;
+    o.optimize = $("optOptimize").checked;
+    o.annElision = $("optAnn").checked;
+    o.opWeakening = $("optWeaken").checked;
+    var flat = $("optFlat").checked;
+    o.methodFlatness = flat; o.tailFlat = flat; o.importedMethodFlat = flat;
+  }
+  return o;
+}
+
+async function compileOne(usePromise) {
+  var trace = null;
+  var o = optionsFor(usePromise);
+  o.onCompile = function (locator, loadable, tr) {
+    if (String(locator.uri()).indexOf("definitions") !== -1) trace = tr;
+    return loadable;
+  };
+  var finder = C.makeFinder();
+  var locator = C.tsRepl.makeDefinitionsLocator(function () { return currentSource; },
+                                                C.CS.standardGlobals);
+  var modules = new Map(C.support.loadables);
+  var worklist = await C.CL.compileWorklistKnownModules(finder, locator, { "load-path": "." }, modules);
+  var compiled = C.CL.compileProgramWith(worklist, modules, o);
+  var loadable = compiled.loadables[compiled.loadables.length - 1];
+  if (!C.CS.isOk(loadable.resultPrinter)) {
+    var probs = loadable.resultPrinter.problems || [];
+    var msg = probs.map(function (p) { try { return String(p); } catch (e) { return "(problem)"; } }).join("\n");
+    return { error: msg || "compile error" };
+  }
+  // The "Generated JS" phase holds a JS AST, not text. pyretToJsPretty() gives a
+  // PPrint doc; .pretty(width) renders it to an array of lines. (pyretToJsRunnable()
+  // also returns a string, but it is the runnable module wrapper with an inline
+  // sourcemap -- unreadable for this purpose.)
+  var code = null;
+  if (trace && trace.length) {
+    var last = trace[trace.length - 1];
+    var r = last && (last.result !== undefined ? last.result : last.value);
+    var obj = r && r.code;
+    if (typeof obj === "string") code = obj;
+    else if (obj && typeof obj.pyretToJsPretty === "function") {
+      try {
+        var rendered = obj.pyretToJsPretty().pretty(100);
+        if (Array.isArray(rendered)) {
+          // The module wrapper leads with a one-line inline sourcemap ("theMap"),
+          // thousands of characters wide. It is noise here -- the interesting code
+          // is "theModule" onward -- so drop it.
+          rendered = rendered.filter(function (l) { return l.indexOf('"theMap"') === -1; });
+          code = rendered.join("\n");
+        } else { code = String(rendered); }
+      } catch (e) { code = null; }
+    }
+  }
+  return { code: code, trace: trace };
+}
+
+function countOf(code, re) { var m = code.match(re); return m ? m.length : 0; }
+
+function renderPane(preId, countId, res) {
+  var pre = $(preId), counts = $(countId);
+  if (res.error) { pre.textContent = res.error; counts.textContent = "compile error"; return null; }
+  if (!res.code) { pre.textContent = "(no Generated JS phase in the trace)"; counts.textContent = "—"; return null; }
+  var code = res.code;
+  var nAsync = countOf(code, /\basync\s+function\b/g) + countOf(code, /\basync\s*\(/g);
+  var nAwait = countOf(code, /\bawait\b/g);
+  var nPause = countOf(code, /checkPause|needsPause/g);
+  counts.innerHTML = "<b>" + (code.length / 1024).toFixed(1) + "</b> KB &nbsp; " +
+                     "async <b>" + nAsync + "</b> &nbsp; await <b>" + nAwait + "</b> &nbsp; pause <b>" + nPause + "</b>";
+  // highlight the machinery, escaping first
+  var html = code.replace(/[&<>]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]; })
+    .replace(/\basync\b/g, '<span class="kw-async">async</span>')
+    .replace(/\bawait\b/g, '<span class="kw-await">await</span>')
+    .replace(/\b(checkPause|needsPause)\b/g, '<span class="kw-pause">$1</span>');
+  pre.innerHTML = html;
+  return { bytes: code.length, phases: res.trace ? res.trace.length : 0 };
+}
+
+async function compileBoth() {
+  if (C === null || currentSource === null) return;
+  var mine = ++token;
+  setStatus("compiling…", "busy");
+  try {
+    var cont = await compileOne(false);
+    if (mine !== token) return;
+    var prom = await compileOne(true);
+    if (mine !== token) return;
+    clearErr();
+    var a = renderPane("cJs", "cCounts", cont);
+    var b = renderPane("pJs", "pCounts", prom);
+    if (a && b) {
+      var delta = ((b.bytes - a.bytes) / a.bytes * 100);
+      $("phases").textContent =
+        "phases: cont " + a.phases + " · promise " + b.phases +
+        "   |   emitted JS: promise is " + (delta >= 0 ? "+" : "") + delta.toFixed(1) + "% vs cont";
+      setStatus("ok", "ok");
+    } else {
+      $("phases").textContent = "—";
+      setStatus(cont.error || prom.error ? "compile error" : "ok", cont.error || prom.error ? "bad" : "ok");
+    }
+  } catch (e) {
+    fatal("Compile failed:\n" + (e && e.stack ? e.stack : String(e)));
+  }
+}
+
+/* ---------------- wiring ---------------- */
+// URL params make a specific state linkable -- and are how this page is checked
+// from headless Chrome, which cannot click:
+//   ?preset=flat%20arithmetic&flat=0&optimize=0&ann=0&weaken=0
+var PARAMS = new URLSearchParams(location.search);
+function paramBool(name, el) {
+  var v = PARAMS.get(name);
+  if (v === null) return;
+  $(el).checked = !(v === "0" || v === "false");
+}
+paramBool("optimize", "optOptimize");
+paramBool("flat", "optFlat");
+paramBool("ann", "optAnn");
+paramBool("weaken", "optWeaken");
+
+var sel = $("preset");
+Object.keys(SAMPLES).forEach(function (k) {
+  var o = document.createElement("option"); o.value = k; o.textContent = k; sel.appendChild(o);
+});
+var wantPreset = PARAMS.get("preset");
+if (wantPreset && SAMPLES[wantPreset]) { sel.value = wantPreset; }
+sel.addEventListener("change", function () {
+  currentSource = SAMPLES[sel.value];
+  sendReset(currentSource);
+  compileBoth();
+});
+["optOptimize", "optFlat", "optAnn", "optWeaken"].forEach(function (id) {
+  $(id).addEventListener("change", compileBoth);
+});
+$("recompile").addEventListener("click", compileBoth);
+
+makeEditor();
+</script>
+</body>
+</html>
