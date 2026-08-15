@@ -1,0 +1,1197 @@
+<!doctype html>
+<!--
+  bytecode.html -- a static, single-page visualizer for the interpreter back
+  end (pyret-lang/src/ts-compiler/src/interp).
+
+  The page is the embedded editor plus one extra pane: every edit in the
+  definitions window is compiled with `backend: 'interp'` and the resulting
+  bytecode is disassembled next to it. Nothing is run to produce it, and
+  nothing is sent anywhere -- it is the same compile the editor would do on
+  Run, stopped one step earlier, at the program the machine would execute.
+
+  HOW IT WORKS, and why it needs no server and no build of its own:
+
+  - The left pane is `editor.embed.html?compiler=interp`, the artifact an
+    embedding host deploys. The host half of the embed protocol (pyret-init
+    -> gainControl + reset, then `change` events carrying editorContents) is
+    inlined below rather than pulled from the pyret-embed library, so this
+    file is self-contained: drop it in build/web and open it.
+
+  - That iframe is SAME-ORIGIN (it is served from this directory), and it has
+    already loaded everything a compile needs:
+      * window.PyretTSCompiler -- the TS compiler bundle (ts-compiler.gz.js),
+        including `interp.disasm`, the back end's own disassembler/verifier;
+      * window.THE_RUNTIME -- the page runtime, whose "staticModules" param
+        is the precompiled builtin trove;
+      * the ts-compiler-lib module, whose makeBuiltinSupport/makeFinderFactory
+        turn that trove into Loadables and a module finder.
+    So this page borrows the editor's compiler instead of shipping a second
+    one. It reuses cpo-main-ts.js's own plumbing, which is what keeps the
+    bytecode shown here the bytecode that page would run.
+
+  - Compiling without running is two calls: compileWorklistKnownModules to
+    chase imports (the builtins are already-compiled Loadables, so only
+    definitions:// is ever compiled), then compileProgramWith. With
+    collectAll set, onCompile hands back the phase trace, whose "Bytecode"
+    phase result IS the VMProgram -- no JSON round trip, and the earlier
+    phases give the ANF the emitter read and a per-phase time breakdown.
+
+  The listing text comes from disasm.disassemble, so it cannot drift from the
+  disassembler; the structure around it (pc, opcode, source loc, jump targets)
+  is decoded separately with disasm.instructions and cross-checked against
+  that text by pc before any of it is used.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pyret bytecode visualizer</title>
+<link rel="icon" type="image/png" href="./img/pyret-icon.png" />
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #f6f7f9;
+    --panel-2: #eceef2;
+    --line: #d8dce3;
+    --ink: #1b1f24;
+    --ink-dim: #61676f;
+    --ink-faint: #8b929b;
+    --accent: #2b6cb0;
+    --accent-soft: #e4eefb;
+    --good: #1f7a4d;
+    --bad: #b32d2e;
+    --warn: #8a6100;
+    --op: #6b21a8;
+    --reg: #0f766e;
+    --konst: #a15c00;
+    --glob: #1d4ed8;
+    --name: #9d174d;
+    --mono: "Fira Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ---------------------------------------------------------------- header */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+  }
+  header h1 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+  }
+  header h1 .sub { color: var(--ink-faint); font-weight: 400; }
+  .spacer { flex: 1 1 auto; }
+  .opts { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .opts label { display: flex; align-items: center; gap: 4px; color: var(--ink-dim); white-space: nowrap; cursor: pointer; }
+  .opts input { margin: 0; }
+  button {
+    font: inherit;
+    padding: 3px 10px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: #fff;
+    color: var(--ink);
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .pill {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--panel-2);
+    color: var(--ink-dim);
+    white-space: nowrap;
+  }
+  .pill.busy { background: #fff6dc; color: var(--warn); }
+  .pill.ok { background: #e6f4ec; color: var(--good); }
+  .pill.bad { background: #fbe9e9; color: var(--bad); }
+
+  /* ------------------------------------------------------------------ body */
+  main { flex: 1 1 auto; display: flex; min-height: 0; }
+  #editorPane { flex: 0 0 50%; min-width: 220px; position: relative; }
+  #editorPane iframe { width: 100%; height: 100%; border: 0; display: block; }
+  #splitter {
+    flex: 0 0 6px;
+    cursor: col-resize;
+    background: var(--line);
+  }
+  #splitter:hover, #splitter.dragging { background: var(--accent); }
+  #bytecodePane {
+    flex: 1 1 0;
+    min-width: 260px;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border-left: 0;
+  }
+
+  /* ------------------------------------------------------------------ tabs */
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); background: var(--panel); flex: 0 0 auto; }
+  .tabs button {
+    border: 0;
+    border-right: 1px solid var(--line);
+    border-radius: 0;
+    background: transparent;
+    padding: 6px 14px;
+    color: var(--ink-dim);
+  }
+  .tabs button.active { background: var(--bg); color: var(--ink); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+  .tabs .tabnote { margin-left: auto; align-self: center; padding-right: 10px; color: var(--ink-faint); font-size: 11px; font-family: var(--mono); }
+
+  .tabbody { flex: 1 1 auto; min-height: 0; display: none; }
+  .tabbody.active { display: flex; }
+
+  /* --------------------------------------------------------- disassembly */
+  #disasmBody { flex-direction: row; }
+  #funcNav {
+    flex: 0 0 210px;
+    overflow: auto;
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+    padding: 4px 0;
+  }
+  #funcNav .navitem {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding: 3px 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #funcNav .navitem:hover { background: var(--accent-soft); }
+  #funcNav .navitem.main { font-weight: 700; }
+  #funcNav .navitem .meta { color: var(--ink-faint); }
+  #listing { flex: 1 1 auto; overflow: auto; padding: 8px 0 40vh 0; }
+
+  .fn { margin: 0 0 14px 0; }
+  .fnhead {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 4px 10px;
+    background: var(--panel-2);
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .fnhead .fname { font-weight: 700; }
+  .fnhead .fmeta { color: var(--ink-dim); }
+  table.code { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  table.code td { padding: 0 6px; vertical-align: top; white-space: pre; }
+  table.code tr.instr:hover { background: var(--accent-soft); }
+  table.code tr.instr.clickable { cursor: pointer; }
+  table.code tr.jumped { background: #fff6dc; }
+  td.pc { color: var(--ink-faint); text-align: right; width: 1%; }
+  td.src { color: var(--ink-faint); text-align: right; width: 1%; }
+  td.op { color: var(--op); font-weight: 600; width: 1%; }
+  td.args { width: 99%; }
+  .args .r { color: var(--reg); }
+  .args .k { color: var(--konst); }
+  .args .g { color: var(--glob); }
+  .args .u { color: var(--name); }
+  .args a.jump { color: var(--accent); text-decoration: underline dotted; cursor: pointer; }
+
+  pre.raw { margin: 0; padding: 10px; font-family: var(--mono); font-size: 12px; white-space: pre; }
+  .comments { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); padding: 6px 10px; white-space: pre-wrap; border-bottom: 1px solid var(--line); }
+
+  /* -------------------------------------------------------- program/stats */
+  .scroll { flex: 1 1 auto; overflow: auto; padding: 10px 12px 40vh 12px; }
+  .scroll h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-dim); margin: 16px 0 6px 0; }
+  .scroll h2:first-child { margin-top: 0; }
+  table.data { border-collapse: collapse; font-family: var(--mono); font-size: 11.5px; width: 100%; }
+  table.data th { text-align: left; color: var(--ink-faint); font-weight: 600; border-bottom: 1px solid var(--line); padding: 2px 8px 2px 0; }
+  table.data td { padding: 1px 8px 1px 0; vertical-align: top; border-bottom: 1px solid #f0f1f4; }
+  table.data td.idx { color: var(--ink-faint); text-align: right; width: 1%; }
+  table.data td.wrap { white-space: pre-wrap; word-break: break-word; }
+  table.data.narrow { width: auto; }
+  table.data.narrow td:first-child { padding-right: 28px; }
+  table.data td.kind { color: var(--ink-dim); width: 1%; white-space: nowrap; }
+  .more { margin-top: 4px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; font-family: var(--mono); font-size: 12px; }
+  .kv .k2 { color: var(--ink-dim); }
+  .bar { display: inline-block; height: 9px; background: var(--accent); border-radius: 2px; vertical-align: middle; }
+  .verdict.ok { color: var(--good); }
+  .verdict.bad { color: var(--bad); }
+
+  /* ---------------------------------------------------------------- errors */
+  #errors { flex: 0 0 auto; max-height: 45%; overflow: auto; border-bottom: 1px solid var(--line); background: #fdf3f3; display: none; }
+  #errors.shown { display: block; }
+  #errors pre { margin: 0; padding: 8px 10px; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; color: var(--bad); }
+  #errors .ehead { padding: 5px 10px; font-weight: 600; color: var(--bad); border-bottom: 1px solid #f2d5d5; }
+  .empty { padding: 24px 14px; color: var(--ink-faint); font-family: var(--mono); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Pyret bytecode <span class="sub">&mdash; <code>--backend interp</code></span></h1>
+  <span id="status" class="pill">starting&hellip;</span>
+  <div class="spacer"></div>
+  <div class="opts">
+    <label><input type="checkbox" id="optLive" checked> live</label>
+    <label><input type="checkbox" id="optChecks" checked> check blocks</label>
+    <label><input type="checkbox" id="optTypeCheck"> type check</label>
+    <label><input type="checkbox" id="optTail" checked> tail calls</label>
+    <button id="recompile">Recompile</button>
+  </div>
+</header>
+
+<main>
+  <div id="editorPane"></div>
+  <div id="splitter" title="Drag to resize"></div>
+  <div id="bytecodePane">
+    <div class="tabs">
+      <button data-tab="disasm" class="active">Disassembly</button>
+      <button data-tab="program">Program</button>
+      <button data-tab="stats">Stats</button>
+      <button data-tab="raw">Raw</button>
+      <span class="tabnote" id="tabnote"></span>
+    </div>
+    <div id="errors"></div>
+    <div class="tabbody active" id="disasmBody">
+      <div id="funcNav"></div>
+      <div id="listing"><div class="empty">Waiting for the editor to load&hellip;</div></div>
+    </div>
+    <div class="tabbody" id="programBody"><div class="scroll" id="programScroll"></div></div>
+    <div class="tabbody" id="statsBody"><div class="scroll" id="statsScroll"></div></div>
+    <div class="tabbody" id="rawBody"><div class="scroll"><pre class="raw" id="rawPre"></pre></div></div>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+/* ==================================================================== *
+ * 0. Constants                                                         *
+ * ==================================================================== */
+
+var EDITOR_SRC = "./editor.embed.html?compiler=interp#footerStyle=hide";
+var DEFS_URI = "definitions://";
+var DEBOUNCE_MS = 300;
+var STORAGE_KEY = "pyret-bytecode-visualizer-program";
+
+var SAMPLE = [
+  "use context starter2024",
+  "",
+  "fun sum(n, sofar):",
+  "  if n <= 0: sofar",
+  "  else: sum(n - 1, sofar + n)",
+  "  end",
+  "end",
+  "",
+  "sum(10, 0)"
+].join("\n");
+
+/*
+  Where an opcode parks a loc-table index, by operand position. Read off the
+  emit sites in vm-compile.ts (`this.locK(...)`); an opcode absent here has no
+  source position of its own. Only used to decorate the listing -- a wrong or
+  missing entry costs a line number, never correctness of the bytecode shown.
+*/
+var LOC_AT = {
+  LETREC: 2, NEWTYPE: 3, CASES: 2, CASESPRE: 2, TAILCALL: 1, CALL: 2,
+  METHCALL: 3, PRIMAPP: 2, EXTEND: 2, UPDATE: 2, DOT: 3, COLON: 3,
+  GETBANG: 3, TUPLEGET: 3, TUPLECHK: 2, ANNCHECK: 2, ANNCHECKV: 2
+};
+
+/* ==================================================================== *
+ * 1. Page state                                                        *
+ * ==================================================================== */
+
+var frame = null;          // the editor iframe
+var C = null;              // { T, CS, CL, D, support, makeFinder, tsRepl }
+var currentSource = null;  // last definitions text seen
+var compiledSource = null; // definitions text of the displayed program
+var lastProgram = null;    // VMProgram
+var compileToken = 0;
+var debounceTimer = null;
+var sourceMarks = [];      // CodeMirror marks we own inside the iframe
+
+var $ = function(id) { return document.getElementById(id); };
+
+function setStatus(text, cls) {
+  var el = $("status");
+  el.textContent = text;
+  el.className = "pill" + (cls ? " " + cls : "");
+}
+
+/* Bumped once per finished compile, good or bad. Nothing on the page reads
+   it; it is the settle point automation can wait on, since two compiles in a
+   row can leave the status pill saying the same thing. */
+var compilesFinished = 0;
+function compileFinished() {
+  compilesFinished += 1;
+  document.body.setAttribute("data-compiles", String(compilesFinished));
+}
+
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/* ==================================================================== *
+ * 2. The embed protocol, host side                                     *
+ *                                                                      *
+ * The same handshake pyret-embed performs (embed/src/pyret.ts): the     *
+ * editor announces `pyret-init`, we take control and send a `reset`,    *
+ * and from then on every keystroke arrives as a `change` message whose  *
+ * state carries the full definitions text. Inlined so this page has no  *
+ * dependency beyond the editor artifact next to it.                    *
+ * ==================================================================== */
+
+function makeEditor() {
+  frame = document.createElement("iframe");
+  frame.src = EDITOR_SRC;
+  frame.id = "pyret-editor";
+  frame.setAttribute("title", "Pyret editor");
+  $("editorPane").appendChild(frame);
+}
+
+function post(message) {
+  frame.contentWindow.postMessage(message, "*");
+}
+
+function sendReset(source) {
+  post({
+    protocol: "pyret",
+    data: {
+      type: "reset",
+      state: JSON.stringify({
+        definitionsAtLastRun: false,
+        interactionsSinceLastRun: [],
+        editorContents: source,
+        replContents: "",
+        messageNumber: 0
+      })
+    }
+  });
+}
+
+function onMessage(message) {
+  if (!frame || message.source !== frame.contentWindow) { return; }
+  var payload = message.data;
+  if (!payload || payload.protocol !== "pyret") { return; }
+  var type = payload.data && payload.data.type;
+
+  if (type === "pyret-init") {
+    var source = initialSource();
+    post({ type: "gainControl" });
+    sendReset(source);
+    // The reset installs the text with CodeMirror origin "@ignore-this-api",
+    // which emits no `change` -- so the starting text has to be recorded here
+    // rather than waited for, and the first compile is ours to kick off once
+    // the editor's compiler is reachable.
+    currentSource = source;
+    bootCompiler();
+    return;
+  }
+  if (payload.state && typeof payload.state.editorContents === "string") {
+    noteSource(payload.state.editorContents);
+  }
+}
+
+function initialSource() {
+  try {
+    var saved = window.localStorage.getItem(STORAGE_KEY);
+    if (typeof saved === "string" && saved.length > 0) { return saved; }
+  } catch (e) { /* private mode, or no storage: fall through to the sample */ }
+  return SAMPLE;
+}
+
+function noteSource(text) {
+  if (text === currentSource) { return; }
+  currentSource = text;
+  try { window.localStorage.setItem(STORAGE_KEY, text); } catch (e) { /* ignore */ }
+  if (!$("optLive").checked) {
+    setStatus("edited (live off)", "");
+    return;
+  }
+  scheduleCompile();
+}
+
+function scheduleCompile() {
+  if (debounceTimer !== null) { window.clearTimeout(debounceTimer); }
+  debounceTimer = window.setTimeout(function() {
+    debounceTimer = null;
+    compileNow();
+  }, DEBOUNCE_MS);
+}
+
+/* ==================================================================== *
+ * 3. Borrowing the editor's compiler                                   *
+ * ==================================================================== */
+
+/*
+  ts-compiler-lib is a JS module inside the page's jarr, so the page realm
+  holds it under its jsfile:// uri, wrapped in a JSModuleReturn whose `.jsmod`
+  is the plain record it exported.
+
+  The realm comes from cpo/cpo-builtin-modules, a requirejs module the
+  standalone hands the realm to at load (cpo-standalone.js). Deliberately NOT
+  THE_RUNTIME.modules: cpo runs programs on the very same runtime object, and
+  load-lib repoints `.modules` at whichever realm it is running in (load-lib.js
+  `otherRuntime.modules = realm.instantiated`), so that field is empty or
+  another realm's as soon as anything has been run. getRealm() is set once.
+*/
+function findTsLib(W) {
+  var mods = null;
+  try { mods = W.requirejs("cpo/cpo-builtin-modules").getRealm().instantiated; }
+  catch (e) { mods = null; }
+  if (!mods) { mods = W.THE_RUNTIME && W.THE_RUNTIME.modules; }
+  if (!mods) { return null; }
+  var keys = Object.keys(mods);
+  for (var i = 0; i < keys.length; i++) {
+    if (keys[i].indexOf("ts-compiler-lib") === -1) { continue; }
+    var m = mods[keys[i]];
+    if (m && m.jsmod && typeof m.jsmod.makeBuiltinSupport === "function") { return m.jsmod; }
+  }
+  return null;
+}
+
+function bootCompiler() {
+  if (C !== null) { return; }
+  setStatus("loading compiler…", "busy");
+  var tries = 0;
+  var poll = window.setInterval(function() {
+    tries += 1;
+    var W = frame.contentWindow;
+    var tsLib = null;
+    try { tsLib = W && W.PyretTSCompiler && W.THE_RUNTIME ? findTsLib(W) : null; }
+    catch (e) { tsLib = null; }
+    if (tsLib === null) {
+      if (tries > 600) {
+        window.clearInterval(poll);
+        fatal("Could not reach the editor's compiler.\n\n" +
+              "This page needs editor.embed.html loaded with ?compiler=interp and served " +
+              "from the same origin as this file (it reads window.PyretTSCompiler and " +
+              "window.THE_RUNTIME out of the frame). Is this a build with `make web-ts`?");
+      }
+      return;
+    }
+    window.clearInterval(poll);
+    try { setUpCompiler(W, tsLib); }
+    catch (e) { fatal("Failed to set up the compiler:\n" + (e && e.stack ? e.stack : String(e))); return; }
+    compileNow();
+  }, 100);
+}
+
+function setUpCompiler(W, tsLib) {
+  var T = W.PyretTSCompiler;
+  var support = tsLib.makeBuiltinSupport(W.THE_RUNTIME.getParam("staticModules"));
+  var makeFinder = tsLib.makeFinderFactory(support, W.URL_FILE_MODE || "all-remote");
+  // makeRepl is used only for makeDefinitionsLocator, which parses the text
+  // and adds the repl's implicit `provide` -- exactly what the editor does to
+  // the definitions window. Nothing here ever runs a program, so the executor
+  // and realm it wants are never touched.
+  var tsRepl = T.repl.makeRepl({}, support.loadables, {}, { "load-path": "." }, makeFinder);
+  C = {
+    W: W,
+    T: T,
+    CS: T.compileStructs,
+    CL: T.compileLib,
+    D: T.interp && T.interp.disasm,
+    support: support,
+    makeFinder: makeFinder,
+    tsRepl: tsRepl
+  };
+  if (!C.D) {
+    throw new Error("This ts-compiler bundle predates the disassembler export " +
+                    "(PyretTSCompiler.interp.disasm). Rebuild with `make web-ts`.");
+  }
+}
+
+function fatal(msg) {
+  setStatus("unavailable", "bad");
+  showErrors("Bytecode visualizer", msg);
+  $("listing").innerHTML = "";
+}
+
+/* ==================================================================== *
+ * 4. Compiling                                                         *
+ * ==================================================================== */
+
+function compileOptions() {
+  var o = Object.assign({}, C.CS.defaultCompileOptions);
+  o.backend = "interp";
+  o.checkMode = $("optChecks").checked;
+  o.checks = $("optChecks").checked ? "main" : "none";
+  o.checkAll = false;
+  o.typeCheck = $("optTypeCheck").checked;
+  o.properTailCalls = $("optTail").checked;
+  o.collectAll = true;          // so onCompile receives the phase trace
+  o.displayProgress = false;
+  o.log = function() {};
+  o.logError = function(s) { console.error(s); };
+  return o;
+}
+
+async function compileNow() {
+  if (C === null || currentSource === null) { return; }
+  var source = currentSource;
+  var token = ++compileToken;
+  setStatus("compiling…", "busy");
+  var started = window.performance.now();
+
+  var trace = null;
+  var options = compileOptions();
+  options.onCompile = function(locator, loadable, tr) {
+    if (locator.uri() === DEFS_URI) { trace = tr; }
+    return loadable;
+  };
+
+  try {
+    var finder = C.makeFinder();
+    var locator = C.tsRepl.makeDefinitionsLocator(function() { return source; },
+                                                  C.CS.standardGlobals);
+    // The builtins arrive as already-compiled Loadables, so the worklist has
+    // exactly one thing to compile no matter how many modules it imports.
+    var modules = new Map(C.support.loadables);
+    var worklist = await C.CL.compileWorklistKnownModules(
+      finder, locator, { "load-path": "." }, modules);
+    if (token !== compileToken) { return; }
+    var compiled = C.CL.compileProgramWith(worklist, modules, options);
+    if (token !== compileToken) { return; }
+
+    var loadable = compiled.loadables[compiled.loadables.length - 1];
+    var elapsed = window.performance.now() - started;
+
+    if (!C.CS.isOk(loadable.resultPrinter)) {
+      showCompileErrors(loadable.resultPrinter.problems);
+      setStatus("compile error", "bad");
+      compileFinished();
+      return;
+    }
+    var prog = programOf(trace, loadable);
+    if (!prog) {
+      throw new Error("The compile produced no bytecode phase -- is the backend really 'interp'?");
+    }
+    compiledSource = source;
+    lastProgram = prog;
+    hideErrors();
+    render(prog, trace, elapsed);
+    compileFinished();
+  } catch (e) {
+    if (token !== compileToken) { return; }
+    // A parse error is thrown rather than returned -- the front end never
+    // gets far enough to have a CompileResult -- and it is the error a live
+    // recompile hits most, since a half-typed program is usually
+    // unparseable. Render it the way every other error here renders, from
+    // its own renderReason.
+    if (e && typeof e.renderReason === "function") {
+      setStatus("parse error", "bad");
+      showErrors(e.name === "PyretParseError" ? "Parse error" : "Compile error",
+                 renderReason(e));
+    } else {
+      setStatus("compile error", "bad");
+      showErrors("The compiler raised", (e && e.stack) ? e.stack : String(e));
+    }
+    compileFinished();
+  }
+}
+
+/*
+  With collectAll the trace's "Bytecode" phase holds the VMProgram itself.
+  The fallback reads it back out of the emitted module record, which is what
+  disasm.extractProgram exists for -- it keeps the page working if the phase
+  is ever renamed.
+*/
+function programOf(trace, loadable) {
+  if (trace) {
+    for (var i = trace.length - 1; i >= 0; i--) {
+      if (trace[i].name === "Bytecode" && trace[i].result) { return trace[i].result; }
+    }
+  }
+  try {
+    return C.D.extractProgram(loadable.resultPrinter.code.pyretToJsRunnable());
+  } catch (e) {
+    return undefined;
+  }
+}
+
+function phaseNamed(trace, name) {
+  if (!trace) { return undefined; }
+  for (var i = 0; i < trace.length; i++) { if (trace[i].name === name) { return trace[i]; } }
+  return undefined;
+}
+
+/* ------------------------------------------------------------- errors --- */
+
+function renderReason(problem) {
+  try {
+    return C.T.renderErrorDisplay.displayToString(problem.renderReason(), String, []).trim();
+  } catch (e) {
+    return String(problem && problem.message ? problem.message : problem);
+  }
+}
+
+function showCompileErrors(problems) {
+  showErrors(problems.length + (problems.length === 1 ? " compile error" : " compile errors"),
+             problems.map(renderReason).join("\n\n"));
+}
+
+function showErrors(heading, text) {
+  var el = $("errors");
+  el.innerHTML = "";
+  var h = document.createElement("div");
+  h.className = "ehead";
+  h.textContent = heading;
+  var pre = document.createElement("pre");
+  pre.textContent = text;
+  el.appendChild(h);
+  el.appendChild(pre);
+  el.classList.add("shown");
+}
+
+function hideErrors() {
+  $("errors").classList.remove("shown");
+  $("errors").innerHTML = "";
+}
+
+/* ==================================================================== *
+ * 5. Rendering the disassembly                                         *
+ *                                                                      *
+ * The text is disasm.disassemble's, verbatim; the structure hung off it *
+ * (pc, opcode, operand string, source loc) is decoded independently and *
+ * only trusted where the two agree on the pc.                          *
+ * ==================================================================== */
+
+var INSTR_RE = /^\s+(\d+)\s\s(\S+)\s?(.*)$/;
+var FUNC_RE = /^function (\d+)/;
+var ROW_BUDGET = 12000;
+
+function splitListing(prog) {
+  var lines = C.D.disassemble(prog).split("\n");
+  var header = [];
+  var funcs = [];       // { index, headLine, rows: [{ pcText, op, args, instr }] }
+  var current = null;
+  var decoded = null;
+  var at = 0;
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var fm = FUNC_RE.exec(line);
+    if (fm) {
+      var idx = Number(fm[1]);
+      current = { index: idx, headLine: line, rows: [] };
+      funcs.push(current);
+      try { decoded = C.D.instructions(prog.funcs[idx]); }
+      catch (e) { decoded = null; }
+      at = 0;
+      continue;
+    }
+    if (current === null) {
+      if (line.length > 0) { header.push(line); }
+      continue;
+    }
+    var im = INSTR_RE.exec(line);
+    if (!im) { continue; }
+    var instr = null;
+    if (decoded && at < decoded.length && decoded[at].pc === Number(im[1])) {
+      instr = decoded[at];
+    }
+    at += 1;
+    current.rows.push({ pc: Number(im[1]), op: im[2], args: im[3], instr: instr });
+  }
+  return { header: header, funcs: funcs };
+}
+
+/* prog.locs entries are the raw srcloc arrays the JS back end emits:
+   [source, startLine, startCol, startChar, endLine, endCol, endChar], or
+   [moduleName] for a builtin location. */
+function locOf(prog, row) {
+  if (!row.instr) { return null; }
+  var at = LOC_AT[row.op];
+  if (at === undefined) { return null; }
+  var li = row.instr.operands[at];
+  var loc = prog.locs && prog.locs[li];
+  if (!loc || loc.length !== 7) { return null; }
+  return loc;
+}
+
+function colorizeArgs(op, text) {
+  // JMP's whole operand is a pc; everything else spells a branch target
+  // `-> pc`. Both become anchors into this function's listing.
+  if (op === "JMP" && /^\d+$/.test(text.trim())) {
+    var target = text.trim();
+    return '<a class="jump" data-pc="' + target + '">' + target + "</a>";
+  }
+  var out = esc(text);
+  // r0 / u1 / k2 / g3, as the disassembler prints them. This runs BEFORE the
+  // `-> pc` pass on purpose: it takes `SETVAR ... -> r4` out of the running,
+  // leaving only real pcs for the anchor pass below.
+  out = out.replace(/\b([rukg])(\d+)\b/g, function(all, kind, n) {
+    return '<span class="' + kind + '">' + kind + n + "</span>";
+  });
+  out = out.replace(/-&gt; (\d+)/g, function(all, n) {
+    return '-&gt; <a class="jump" data-pc="' + n + '">' + n + "</a>";
+  });
+  return out;
+}
+
+function render(prog, trace, elapsed) {
+  renderDisasm(prog);
+  renderProgram(prog);
+  renderStats(prog, trace, elapsed);
+  $("rawPre").textContent = C.D.disassemble(prog);
+
+  var nInstr = countInstructions(prog);
+  $("tabnote").textContent = prog.funcs.length + " functions · " + nInstr + " instrs";
+  setStatus(prog.funcs.length + " fn · " + nInstr + " instr · " +
+            Math.round(elapsed) + " ms", "ok");
+}
+
+function renderDisasm(prog) {
+  var split = splitListing(prog);
+  var listing = $("listing");
+  var nav = $("funcNav");
+  listing.innerHTML = "";
+  nav.innerHTML = "";
+
+  if (split.header.length > 0) {
+    var c = document.createElement("div");
+    c.className = "comments";
+    c.textContent = split.header.join("\n");
+    listing.appendChild(c);
+  }
+
+  // A big program is a lot of table rows, and building them all makes every
+  // keystroke expensive. Past the budget the function headers still render
+  // (so the nav still works and signatures are still readable) but their
+  // instructions do not -- said so on the page rather than silently dropped,
+  // and the Raw tab is always the whole listing.
+  var budget = ROW_BUDGET;
+  var truncatedFuncs = 0;
+  var truncatedRows = 0;
+
+  split.funcs.forEach(function(fn) {
+    var vmfn = prog.funcs[fn.index];
+    var block = document.createElement("div");
+    block.className = "fn";
+    block.id = "fn" + fn.index;
+
+    var head = document.createElement("div");
+    head.className = "fnhead";
+    head.innerHTML = decorateFuncHead(fn.headLine);
+    block.appendChild(head);
+
+    if (budget <= 0) {
+      truncatedFuncs += 1;
+      truncatedRows += fn.rows.length;
+      var note = document.createElement("div");
+      note.className = "empty";
+      note.textContent = fn.rows.length + " instructions — see the Raw tab";
+      block.appendChild(note);
+      listing.appendChild(block);
+      addNavItem(nav, prog, fn, vmfn, block);
+      return;
+    }
+    budget -= fn.rows.length;
+
+    var table = document.createElement("table");
+    table.className = "code";
+    var rowsHtml = fn.rows.map(function(row) {
+      var loc = locOf(prog, row);
+      var srcCell = loc ? String(loc[1]) : "";
+      var attrs = ' data-fn="' + fn.index + '" data-pc="' + row.pc + '"';
+      if (loc) {
+        attrs += ' data-sl="' + loc[1] + '" data-sc="' + loc[2] +
+                 '" data-el="' + loc[4] + '" data-ec="' + loc[5] + '"' +
+                 ' data-source="' + esc(loc[0]) + '"';
+      }
+      return '<tr class="instr' + (loc ? " clickable" : "") + '"' + attrs +
+             ' id="pc-' + fn.index + "-" + row.pc + '">' +
+             '<td class="pc">' + row.pc + "</td>" +
+             '<td class="src">' + srcCell + "</td>" +
+             '<td class="op">' + esc(row.op) + "</td>" +
+             '<td class="args">' + colorizeArgs(row.op, row.args) + "</td></tr>";
+    });
+    table.innerHTML = "<tbody>" + rowsHtml.join("") + "</tbody>";
+    table.addEventListener("click", function(ev) {
+      var a = ev.target.closest("a.jump");
+      if (a) { jumpTo(fn.index, Number(a.getAttribute("data-pc"))); return; }
+      var tr = ev.target.closest("tr.instr");
+      if (tr) { highlightSource(tr); }
+    });
+    block.appendChild(table);
+    listing.appendChild(block);
+    addNavItem(nav, prog, fn, vmfn, block);
+  });
+
+  if (split.funcs.length === 0) {
+    listing.innerHTML = '<div class="empty">No functions in this program.</div>';
+  } else if (truncatedFuncs > 0) {
+    var msg = document.createElement("div");
+    msg.className = "comments";
+    msg.textContent = "Listing truncated: " + truncatedRows + " instructions in " +
+      truncatedFuncs + " functions past the first " + ROW_BUDGET +
+      " rows are shown as headers only. The Raw tab has the whole program.";
+    listing.insertBefore(msg, listing.firstChild);
+  }
+}
+
+function addNavItem(nav, prog, fn, vmfn, block) {
+  var item = document.createElement("button");
+  item.className = "navitem" + (fn.index === prog.main ? " main" : "");
+  // A lambda has no name of its own -- a where-block's thunks, for one --
+  // so fall back to the index the listing prints.
+  var label = (vmfn && vmfn.n) ? vmfn.n : "function " + fn.index;
+  item.innerHTML = '<span class="meta">' + fn.index + "</span> " + esc(label) +
+    ' <span class="meta">' + (vmfn ? "/" + vmfn.a : "") +
+    " · " + fn.rows.length + "</span>";
+  item.title = fn.headLine;
+  item.addEventListener("click", function() {
+    block.scrollIntoView({ block: "start" });
+  });
+  nav.appendChild(item);
+}
+
+function decorateFuncHead(line) {
+  var m = /^function (\d+)( \(main\))?: (\S*) (.*)$/.exec(line);
+  if (!m) { return esc(line); }
+  return "function " + m[1] + esc(m[2] || "") + ': <span class="fname">' + esc(m[3]) +
+         '</span> <span class="fmeta">' + esc(m[4]) + "</span>";
+}
+
+function jumpTo(fnIndex, pc) {
+  var el = document.getElementById("pc-" + fnIndex + "-" + pc);
+  if (!el) { return; }
+  Array.prototype.forEach.call(document.querySelectorAll("tr.jumped"), function(tr) {
+    tr.classList.remove("jumped");
+  });
+  el.classList.add("jumped");
+  el.scrollIntoView({ block: "center" });
+}
+
+/* Clicking an instruction shows where it came from, in the editor itself --
+   the frame is same-origin, so its CodeMirror is right there. Marks are ours
+   alone and cleared on the next click. */
+function highlightSource(tr) {
+  var source = tr.getAttribute("data-source");
+  if (source !== DEFS_URI) { return; }
+  var cm = null;
+  try { cm = frame.contentWindow.CPO.editor.cm; } catch (e) { return; }
+  if (!cm) { return; }
+  clearSourceMarks();
+  var from = { line: Number(tr.getAttribute("data-sl")) - 1, ch: Number(tr.getAttribute("data-sc")) };
+  var to = { line: Number(tr.getAttribute("data-el")) - 1, ch: Number(tr.getAttribute("data-ec")) };
+  if (!(from.line >= 0) || !(to.line >= 0)) { return; }
+  try {
+    sourceMarks.push(cm.markText(from, to, { className: "CodeMirror-selectedtext",
+                                             css: "background: #ffe28a;" }));
+    cm.scrollIntoView({ from: from, to: to }, 60);
+  } catch (e) { /* the text moved under us; nothing to show */ }
+}
+
+function clearSourceMarks() {
+  sourceMarks.forEach(function(m) { try { m.clear(); } catch (e) { /* gone */ } });
+  sourceMarks = [];
+}
+
+/* ==================================================================== *
+ * 6. Program tab                                                       *
+ * ==================================================================== */
+
+var TABLE_LIMIT = 250;
+
+function table(headings, rows) {
+  var head = "<tr>" + headings.map(function(h) { return "<th>" + esc(h) + "</th>"; }).join("") + "</tr>";
+  var shown = rows.slice(0, TABLE_LIMIT).join("");
+  var html = '<table class="data">' + head + shown + "</table>";
+  if (rows.length > TABLE_LIMIT) {
+    html += '<div class="more">' + (rows.length - TABLE_LIMIT) + " more not shown</div>";
+  }
+  return html;
+}
+
+function row(cells) {
+  return "<tr>" + cells.map(function(c, i) {
+    return '<td class="' + (i === 0 ? "idx" : "wrap") + '">' + c + "</td>";
+  }).join("") + "</tr>";
+}
+
+function shortJson(v, n) {
+  var s;
+  try { s = JSON.stringify(v); } catch (e) { s = String(v); }
+  if (s === undefined) { s = String(v); }
+  return esc(s.length > n ? s.slice(0, n) + "…" : s);
+}
+
+function fmtLoc(l) {
+  if (!l) { return ""; }
+  if (l.length === 1) { return esc(l[0]); }
+  return esc(l[0] + ":" + l[1] + ":" + l[2] + "-" + l[4] + ":" + l[5]);
+}
+
+function renderProgram(prog) {
+  var out = [];
+  out.push("<h2>Module</h2>");
+  out.push('<div class="kv">' +
+    kv("uri", prog.uri) + kv("moduleId", prog.moduleId) +
+    kv("format version", prog.v) + kv("main function", prog.main) +
+    kv("cache cells", prog.ncaches) + kv("functions", prog.funcs.length) +
+    "</div>");
+
+  // VMGlobal is one of ['d', argPosition], ['m', uri, which, name] or
+  // ['f', earlierGlobal, name] -- an instantiation argument, a field of
+  // another module, or a field of one already resolved.
+  out.push("<h2>Globals &mdash; " + prog.globals.length + "</h2>");
+  out.push(table(["#", "kind", "what"], prog.globals.map(function(g, i) {
+    if (g[0] === "d") { return row([i, "dependency", "instantiation argument " + esc(g[1])]); }
+    if (g[0] === "f") { return row([i, "field", "g" + esc(g[1]) + "." + esc(g[2])]); }
+    return row([i, "module field", esc(g[1] + "." + g[2] + "." + g[3])]);
+  })));
+
+  // A constant is [tag, payload]; the tags are opcodes.ts's CONST_*.
+  var CONST_KINDS = ["number", "fixnum", "string", "boolean", "undefined",
+                     "runtime", "srcloc"];
+  out.push("<h2>Constants &mdash; " + prog.consts.length + "</h2>");
+  out.push(table(["#", "kind", "value"], prog.consts.map(function(c, i) {
+    var kind = CONST_KINDS[c[0]] || ("tag " + c[0]);
+    var value = c[0] === 6 ? fmtLoc(prog.locs[c[1]])       // CONST_LOC
+              : c.length < 2 ? ""
+              : shortJson(c[1], 160);
+    return "<tr><td class=\"idx\">" + i + '</td><td class="kind">' + esc(kind) +
+           '</td><td class="wrap">' + value + "</td></tr>";
+  })));
+
+  out.push("<h2>Names &mdash; " + prog.names.length + "</h2>");
+  out.push(table(["#", "name"], prog.names.map(function(n, i) {
+    return row([i, esc(n)]);
+  })));
+
+  out.push("<h2>Source locations &mdash; " + prog.locs.length + "</h2>");
+  out.push(table(["#", "loc"], prog.locs.map(function(l, i) {
+    return row([i, fmtLoc(l)]);
+  })));
+
+  out.push("<h2>Data declarations &mdash; " + prog.datas.length + "</h2>");
+  out.push(table(["#", "data"], prog.datas.map(function(d, i) {
+    var variants = (d.vs || []).map(function(v) {
+      if (v.k === "s") { return v.n; }
+      return v.n + "(" + (v.ms || []).map(function(m) {
+        return (m.m ? "ref " : "") + m.n + (m.a >= 0 ? " :: ann" + m.a : "");
+      }).join(", ") + ")";
+    }).join(" | ");
+    return row([i, esc(d.n || "") + ": " + esc(variants)]);
+  })));
+
+  // Annotation descriptors are [tag, ...]; the tags are opcodes.ts's ANN_*.
+  var ANN_KINDS = ["value", "Any", "Function", "Method", "record", "tuple",
+                   "refinement", "dotted"];
+  out.push("<h2>Annotations &mdash; " + prog.anns.length + "</h2>");
+  out.push(table(["#", "kind", "descriptor"], prog.anns.map(function(a, i) {
+    return "<tr><td class=\"idx\">" + i + '</td><td class="kind">' +
+           esc(ANN_KINDS[a[0]] || ("tag " + a[0])) + '</td><td class="wrap">' +
+           shortJson(a, 160) + "</td></tr>";
+  })));
+
+  out.push("<h2>Imported modules &mdash; " + prog.modules.length + "</h2>");
+  out.push(table(["#", "module"], prog.modules.map(function(m, i) {
+    return row([i, shortJson(m, 160)]);
+  })));
+
+  out.push("<h2>Cases dispatch tables &mdash; " + prog.dispatches.length + "</h2>");
+  out.push(table(["#", "variant → pc"], prog.dispatches.map(function(d, i) {
+    return row([i, esc(Object.keys(d).map(function(k) { return k + " → " + d[k]; }).join(", "))]);
+  })));
+
+  $("programScroll").innerHTML = out.join("");
+}
+
+function kv(k, v) {
+  return '<div class="k2">' + esc(k) + "</div><div>" + esc(String(v)) + "</div>";
+}
+
+/* ==================================================================== *
+ * 7. Stats tab                                                         *
+ * ==================================================================== */
+
+function countInstructions(prog) {
+  var n = 0;
+  prog.funcs.forEach(function(fn) {
+    try { n += C.D.instructions(fn).length; } catch (e) { /* skip */ }
+  });
+  return n;
+}
+
+function renderStats(prog, trace, elapsed) {
+  var histogram = {};
+  var total = 0;
+  var words = 0;
+  prog.funcs.forEach(function(fn) {
+    words += fn.c.length;
+    var instrs;
+    try { instrs = C.D.instructions(fn); } catch (e) { return; }
+    instrs.forEach(function(i) {
+      histogram[i.name] = (histogram[i.name] || 0) + 1;
+      total += 1;
+    });
+  });
+  var sorted = Object.keys(histogram).sort(function(a, b) { return histogram[b] - histogram[a]; });
+  var max = sorted.length > 0 ? histogram[sorted[0]] : 1;
+
+  var out = [];
+  out.push("<h2>Size</h2>");
+  out.push('<div class="kv">' +
+    kv("functions", prog.funcs.length) +
+    kv("instructions", total) +
+    kv("code words", words) +
+    kv("constants", prog.consts.length) +
+    kv("names", prog.names.length) +
+    kv("locs", prog.locs.length) +
+    kv("cache cells", prog.ncaches) +
+    kv("compile time", Math.round(elapsed) + " ms") +
+    "</div>");
+
+  out.push("<h2>Static opcode mix</h2>");
+  out.push('<table class="data">' + sorted.map(function(name) {
+    var n = histogram[name];
+    var pct = total > 0 ? (100 * n / total) : 0;
+    return "<tr><td>" + esc(name) + "</td>" +
+           '<td class="idx">' + n + "</td>" +
+           '<td class="idx">' + pct.toFixed(1) + "%</td>" +
+           '<td><span class="bar" style="width:' + (140 * n / max).toFixed(1) + 'px"></span></td></tr>';
+  }).join("") + "</table>");
+  out.push('<div class="more">Counts of instructions as <em>emitted</em>. What the machine ' +
+           'executes is a different distribution &mdash; see the interp README.</div>');
+
+  out.push("<h2>Verifier</h2>");
+  out.push(verifierHtml(prog));
+
+  if (trace && trace.length > 0) {
+    out.push("<h2>Compile phases</h2>");
+    out.push('<table class="data narrow">' + trace.map(function(p) {
+      return "<tr><td>" + esc(p.name) + '</td><td class="idx">' +
+             (typeof p.time === "number" ? p.time.toFixed(1) + " ms" : "") + "</td></tr>";
+    }).join("") + "</table>");
+  }
+
+  $("statsScroll").innerHTML = out.join("");
+}
+
+/*
+  disasm's own checks, run on the program on screen: checkFunc rejects an
+  unknown opcode, an operand list that runs off the end, or a jump that
+  misses an instruction boundary; cacheSlotProblems catches two sites handed
+  overlapping inline-cache cells; readsBeforeAssignment catches a letrec cell
+  read before its straight-line assignment. These are what `make
+  interp-unit-test` runs over the whole trove.
+*/
+function verifierHtml(prog) {
+  var problems = [];
+  prog.funcs.forEach(function(fn, i) {
+    try { C.D.checkFunc(prog, fn); }
+    catch (e) { problems.push("function " + i + " (" + fn.n + "): " + (e && e.message ? e.message : String(e))); }
+  });
+  try { problems = problems.concat(C.D.cacheSlotProblems(prog) || []); } catch (e) { /* older bundle */ }
+  prog.funcs.forEach(function(fn) {
+    try { problems = problems.concat(C.D.readsBeforeAssignment(prog, fn) || []); }
+    catch (e) { /* older bundle */ }
+  });
+  if (problems.length === 0) {
+    return '<div class="verdict ok">✓ every function decodes, every jump lands on an ' +
+           "instruction boundary, no two sites share cache cells, no letrec cell is read " +
+           "before assignment.</div>";
+  }
+  return '<div class="verdict bad">' + problems.map(esc).join("<br>") + "</div>";
+}
+
+/* ==================================================================== *
+ * 8. Chrome: tabs, splitter, controls                                  *
+ * ==================================================================== */
+
+function setUpTabs() {
+  var buttons = document.querySelectorAll(".tabs button");
+  Array.prototype.forEach.call(buttons, function(b) {
+    b.addEventListener("click", function() {
+      Array.prototype.forEach.call(buttons, function(o) { o.classList.remove("active"); });
+      b.classList.add("active");
+      Array.prototype.forEach.call(document.querySelectorAll(".tabbody"), function(body) {
+        body.classList.remove("active");
+      });
+      $(b.getAttribute("data-tab") + "Body").classList.add("active");
+    });
+  });
+}
+
+function setUpSplitter() {
+  var splitter = $("splitter");
+  var pane = $("editorPane");
+  var dragging = false;
+  splitter.addEventListener("mousedown", function(ev) {
+    dragging = true;
+    splitter.classList.add("dragging");
+    // The editor lives in an iframe, which eats mousemove once the pointer
+    // crosses into it; a shield over everything keeps the drag on this page.
+    document.body.style.userSelect = "none";
+    var shield = document.createElement("div");
+    shield.id = "dragShield";
+    shield.style.cssText = "position:fixed;inset:0;z-index:9999;cursor:col-resize;";
+    document.body.appendChild(shield);
+    ev.preventDefault();
+  });
+  window.addEventListener("mousemove", function(ev) {
+    if (!dragging) { return; }
+    var rect = document.querySelector("main").getBoundingClientRect();
+    var px = Math.min(Math.max(ev.clientX - rect.left, 220), rect.width - 260);
+    pane.style.flex = "0 0 " + px + "px";
+  });
+  window.addEventListener("mouseup", function() {
+    if (!dragging) { return; }
+    dragging = false;
+    splitter.classList.remove("dragging");
+    document.body.style.userSelect = "";
+    var shield = $("dragShield");
+    if (shield) { shield.remove(); }
+  });
+}
+
+function setUpControls() {
+  $("recompile").addEventListener("click", function() { compileNow(); });
+  ["optChecks", "optTypeCheck", "optTail"].forEach(function(id) {
+    $(id).addEventListener("change", function() { compileNow(); });
+  });
+  $("optLive").addEventListener("change", function() {
+    if ($("optLive").checked && currentSource !== compiledSource) { compileNow(); }
+  });
+}
+
+/* ==================================================================== *
+ * 9. Go                                                                *
+ * ==================================================================== */
+
+setUpTabs();
+setUpSplitter();
+setUpControls();
+window.addEventListener("message", onMessage);
+makeEditor();
+</script>
+</body>
+</html>

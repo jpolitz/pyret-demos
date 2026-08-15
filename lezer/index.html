@@ -1,0 +1,160 @@
+<!doctype html>
+<!--
+  Pyret parser differential demo -- Lezer vs the canonical RNGLR parser.
+
+  Both parsers run here, in your browser, on the same source text, on every
+  edit. Nothing is sent anywhere and nothing is compiled or run; this page is
+  only about PARSING.
+
+  WHY IT NEEDS NO SERVER
+
+  - Lezer side: the grammar (../pyret.named.grammar) is compiled to tables ahead
+    of time by gen-table.js, so no grammar generator ships in the bundle.
+  - RNGLR side: Pyret's real parser is an AMD module pair. The four sources
+    (cyclicJSON -> rnglr -> jglr -> pyret-tokenizer) plus the generated tables
+    (pyret-parser.js, from lang/build/phase0) are inlined as text and eval'd
+    under a small captured `define` shim. That is the SAME parser the compiler
+    uses, unmodified -- not a reimplementation for demo purposes.
+  - Both parsers consume the SAME token stream: the Lezer grammar's external
+    tokenizer replays Pyret's own tokenizer. That is the architectural point of
+    the experiment, and it is why only the CFG is ever in question here.
+
+  WHAT THE VERDICT MEANS
+
+  differential.js is a port of ../compare-trees.js, the offline harness behind
+  the 553/553 corpus figure: Lezer node names are mapped back to BNF names via
+  namemap.json, Lezer's `Space` leaves are dropped, and transparent EBNF
+  grouping nodes are spliced out of BOTH trees. Only then are the two compared.
+  AGREE means those normalized trees are string-identical.
+
+  TIMING HONESTY
+
+  Live edits time one parse of each, which on a small program is mostly noise.
+  "Benchmark" takes a median of 5 after a warmup. Even that is a single-file,
+  single-browser number -- the 5.4x end-to-end / 11.5x parser-only figures in
+  the write-up come from timing.js over a 553-file, 3.16 MB corpus in node.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pyret: Lezer vs RNGLR</title>
+    <style>
+      :root {
+        --bg: #ffffff; --panel: #f6f7f9; --line: #d8dce3;
+        --ink: #1b1f24; --ink-dim: #61676f; --ink-faint: #8b929b;
+        --accent: #2b6cb0; --good: #1f7a4d; --good-bg: #e7f5ee;
+        --bad: #b32d2e; --bad-bg: #fdecec; --warn: #8a6100; --warn-bg: #fdf4e3;
+        --mono: "Fira Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: var(--ink); background: var(--bg);
+        display: flex; flex-direction: column; overflow: hidden;
+      }
+      header {
+        display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+        padding: 7px 12px; border-bottom: 1px solid var(--line);
+        background: var(--panel); flex: 0 0 auto;
+      }
+      header h1 { font-size: 14px; font-weight: 600; margin: 0; white-space: nowrap; }
+      header h1 .sub { color: var(--ink-faint); font-weight: 400; }
+      .spacer { flex: 1 1 auto; }
+      select, button {
+        font: inherit; padding: 3px 10px; border: 1px solid var(--line);
+        border-radius: 4px; background: #fff; color: var(--ink); cursor: pointer;
+      }
+      button:hover { background: #e4eefb; border-color: var(--accent); }
+      .pill {
+        font-family: var(--mono); font-size: 11px; padding: 2px 8px;
+        border-radius: 10px; border: 1px solid var(--line); background: #fff;
+        white-space: nowrap;
+      }
+      .pill.ok { color: var(--good); background: var(--good-bg); border-color: #b7e0cb; }
+      .pill.bad { color: var(--bad); background: var(--bad-bg); border-color: #f2c2c2; }
+      .pill.warn { color: var(--warn); background: var(--warn-bg); border-color: #edd9ac; }
+      .meter { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; color: var(--ink-dim); }
+      .meter b { color: var(--ink); font-weight: 600; }
+      main { flex: 1 1 auto; display: flex; min-height: 0; }
+      #left, #right { flex: 1 1 50%; min-width: 0; display: flex; flex-direction: column; }
+      #left { border-right: 1px solid var(--line); }
+      .panehead {
+        padding: 4px 10px; border-bottom: 1px solid var(--line);
+        background: var(--panel); color: var(--ink-dim); font-size: 11px;
+        display: flex; gap: 10px; align-items: center; flex: 0 0 auto;
+      }
+      #editor { flex: 1 1 auto; overflow: auto; min-height: 0; }
+      .cm-editor { height: 100%; }
+      #tree {
+        flex: 1 1 auto; overflow: auto; margin: 0; padding: 8px 10px;
+        font-family: var(--mono); font-size: 11px; line-height: 1.35;
+        white-space: pre; color: #24303c;
+      }
+      footer {
+        flex: 0 0 auto; border-top: 1px solid var(--line); background: var(--panel);
+        padding: 6px 12px; font-size: 12px; color: var(--ink-dim);
+      }
+      .diff { font-family: var(--mono); font-size: 11px; }
+      .diff .dl { color: var(--bad); margin-bottom: 2px; }
+      .diff code { color: var(--ink); }
+      .tag {
+        display: inline-block; width: 46px; font-size: 10px; color: #fff;
+        border-radius: 3px; text-align: center; margin-right: 6px;
+      }
+      .tag.r { background: #8a6100; } .tag.l { background: #2b6cb0; }
+      .note { color: var(--ink-faint); font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Pyret parsers <span class="sub">— Lezer vs RNGLR, live</span></h1>
+      <select id="preset" title="Load a program"></select>
+      <button id="bench" title="Median of 5 parses each, after a warmup">Benchmark</button>
+      <span id="verdict" class="pill">…</span>
+      <div class="meter">
+        <span>RNGLR <b id="t-rnglr">—</b></span>
+        <span>Lezer <b id="t-lezer">—</b></span>
+        <span>speedup <b id="t-ratio">—</b></span>
+      </div>
+      <span class="spacer"></span>
+      <span class="note" id="status"></span>
+    </header>
+
+    <main>
+      <div id="left">
+        <div class="panehead">
+          <span>program</span>
+          <span class="spacer"></span>
+          <span id="chars">—</span>
+        </div>
+        <div id="editor"></div>
+      </div>
+      <div id="right">
+        <div class="panehead">
+          <span>Lezer parse tree</span>
+          <span class="note">— when the verdict is AGREE this is RNGLR's tree too, modulo normalization</span>
+          <span class="spacer"></span>
+          <span id="nodes">—</span>
+        </div>
+        <pre id="tree"></pre>
+      </div>
+    </main>
+
+    <footer>
+      <div id="why"></div>
+      <div class="note">
+        Both parsers run in this page and share Pyret's own tokenizer — the Lezer grammar's external
+        tokenizer replays it, so only the grammar is under test. The verdict uses the same normalization
+        as the offline <code>compare-trees.js</code> harness that produced the 553/553 corpus figure.
+        <b>On timing, believe the small number:</b> these presets come out around <b>2–3× end-to-end</b>
+        (median of 5). The often-quoted 5.4× end-to-end / 11.5× parser-only are corpus-wide figures from
+        <code>timing.js</code> over 553 files / 3.16 MB in node — a different mix, and the 11.5× excludes
+        tokenizing, which is ~58% of Lezer's path. Live edits time a single parse and are noisier still.
+      </div>
+    </footer>
+
+    <script src="./bundle.js"></script>
+  </body>
+</html>
