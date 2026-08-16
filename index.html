@@ -34,7 +34,7 @@
 
     <div class="banner">
       <strong>These are experimental and largely AI-generated demos.</strong>
-      The four below come from unmerged experiment branches, not from released Pyret. Treat
+      The five below come from unmerged experiment branches, not from released Pyret. Treat
       them &mdash; code, measurements, and claims alike &mdash; as research sketches rather
       than supported tools.
     </div>
@@ -56,6 +56,14 @@
       <p>The same program compiled by both stack backends at once: <code>function</code> beside
          <code>async function</code>, and a toggle that makes the flatness optimization strip
          <code>await</code>s in front of you. From the Promise/async backend experiment.</p>
+    </a>
+
+    <a class="card" href="./repartee/">
+      <h2>Repartee &mdash; incremental-rerun notebook</h2>
+      <p>A notebook where editing invalidates: change an earlier chunk and every result
+         below it goes dashed, then Run re-evaluates from the earliest edit rather than
+         from the top. The PLATEAU 2021 model on CPO's real editor. From the
+         <code>repartee-repl</code> experiment.</p>
     </a>
 
     <a class="card" href="https://github.com/jpolitz/pyret-lang/releases/tag/pyret-cli-2026-08-15">
@@ -80,7 +88,8 @@
     <footer>
       Built from <a href="https://github.com/jpolitz/pyret-lang">jpolitz/pyret-lang</a>
       (<code>lezer</code>, <code>interp-backend</code>, <code>cli-binary</code>) and
-      <a href="https://github.com/jpolitz/pyret">jpolitz/pyret</a> (<code>promise-rederive</code>).
+      <a href="https://github.com/jpolitz/pyret">jpolitz/pyret</a> (<code>promise-rederive</code>,
+      <code>repartee-repl</code>).
       Each demo directory carries a README with its provenance and rebuild steps.
     </footer>
   </body>
