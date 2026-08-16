@@ -105,6 +105,11 @@ Rendered in headless Chrome from this exact directory, 2026-08-16:
 - Controls run at the same time: stock `editor.embed.html` and a `CPO_UI=""`
   build of the same TS jarr both boot clean, which is what pins the console error
   below to the `CPO_UI` path rather than to anything about static hosting.
+- The same run passes against the live Pages URL, not just locally, and from a
+  subdirectory URL rather than site root. GitHub Pages serves the 17 MB
+  `cpo-main-ts.jarr.min.js` as **2.94 MB on the wire** — within a rounding error
+  of the 2.90 MB `.gz.js` we deliberately did not ship, which is the whole reason
+  shipping inflated costs nothing.
 
 ## Caveats
 
