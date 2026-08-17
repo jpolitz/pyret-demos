@@ -1,7 +1,9 @@
 # Hybrid VM — one function, two forms
 
-Opens straight from disk: double-click `hybrid.html`. No server, no build step,
-no network. 200 KB.
+Live: **https://jpolitz.github.io/pyret-demos/hybrid/hybrid.html**
+
+Opens straight from disk too: double-click `hybrid.html`. No server, no build
+step, no network. 200 KB.
 
 The idea it shows: the promise backend's tier analysis gives every function a
 suspension verdict (`flat | tail-flat | few-suspend | gen`), and **only Gen
@@ -55,8 +57,9 @@ Emitted from `jpolitz/pyret@hybrid-vm` (tip `96340db51`) on
 `tight-ship.exe.xyz:~/work/pyret`, 2026-08-17, with
 `--stack-backend promise --vm-tiers gen --vm-fast all`.
 
-**That branch exists only on that VM.** If it is gone, this page and
-`src/hybrid-demo.json` are the only surviving artifacts of the emission.
+The branch was mirrored to `jpolitz/pyret@hybrid-vm` on 2026-08-17; before that it
+existed only on that VM, which is why `src/hybrid-demo.json` is kept here — it is
+the emission itself, not a rebuildable derivative, unless the compiler is rebuilt.
 
 Each pane's source, precisely:
 
@@ -96,3 +99,6 @@ tier bands in all four colors, `01-tiers` shows one function per tier; every
 function's bail-site set equals its site-table set and every site's live-slot
 list has the same length as its JS name list (8 functions, 24 sites, no
 mismatch); `?sample=…&fn=…&tab=…` selects as advertised.
+
+Also verified on the live Pages URL, not just locally — the served file is
+byte-identical to this one.
