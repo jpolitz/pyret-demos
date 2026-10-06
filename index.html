@@ -34,7 +34,7 @@
 
     <div class="banner">
       <strong>These are experimental and largely AI-generated demos.</strong>
-      The six below come from unmerged experiment branches, not from released Pyret. Treat
+      The seven below come from unmerged experiment branches, not from released Pyret. Treat
       them &mdash; code, measurements, and claims alike &mdash; as research sketches rather
       than supported tools.
     </div>
@@ -75,6 +75,15 @@
          <code>repartee-repl</code> experiment.</p>
     </a>
 
+    <a class="card" href="./table-types/">
+      <h2>Table types &mdash; static checking for Pyret tables</h2>
+      <p>CPO on the TypeScript compiler with a table type checker: schemas like
+         <code>Table&lt;{name :: String, quiz1 :: Number}&gt;</code>, column names checked
+         against them, and schema-polymorphic functions like B2T2's <code>dotProduct</code>.
+         Opens on a worked example with &ldquo;Type-check and Run&rdquo; selected. From the
+         <code>ts-table-types</code> experiment.</p>
+    </a>
+
     <a class="card" href="https://github.com/jpolitz/pyret-lang/releases/tag/pyret-cli-2026-08-15">
       <h2>Pyret CLI &mdash; single-executable downloads</h2>
       <p>Standalone <code>pyret</code> binaries for macOS (arm64/x64), Linux (x64/arm64) and
@@ -96,7 +105,8 @@
 
     <footer>
       Built from <a href="https://github.com/jpolitz/pyret-lang">jpolitz/pyret-lang</a>
-      (<code>lezer</code>, <code>interp-backend</code>, <code>cli-binary</code>) and
+      (<code>lezer</code>, <code>interp-backend</code>, <code>ts-table-types</code>,
+      <code>cli-binary</code>) and
       <a href="https://github.com/jpolitz/pyret">jpolitz/pyret</a> (<code>promise-rederive</code>,
       <code>repartee-repl</code>).
       Each demo directory carries a README with its provenance and rebuild steps.
