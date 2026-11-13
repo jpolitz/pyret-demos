@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<!-- Agent-written (Claude Opus 5.5, 2026-11-13). Not written by Joe Politz. -->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reactor Chat</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --fg: #1d1d1b; --muted: #6b6b66; --panel: #ffffff; --border: #d9d9d4;
+    --log-bg: #1d1d1b; --log-fg: #b8e6b0; --alice: #2f6fb0; --bob: #a8432f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --fg: #ececea; --muted: #9a9a94; --panel: #1f1f1e; --border: #3a3a37;
+      --log-bg: #0d0d0c; --log-fg: #9fd896; --alice: #7fb3e8; --bob: #e8957f;
+    }
+  }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif;
+         display: flex; flex-direction: column; overflow: hidden; }
+  header { padding: 10px 16px; display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  header p { margin: 0; color: var(--muted); }
+  code { font-family: ui-monospace, monospace; font-size: 0.95em; }
+  main { flex: 1; min-height: 0; display: flex; gap: 12px; padding: 0 16px; }
+  .pane { flex: 1; min-width: 0; display: flex; flex-direction: column;
+          border: 1px solid var(--border); border-radius: 6px; background: var(--panel); overflow: hidden; }
+  .pane h2 { margin: 0; padding: 6px 10px; font-size: 13px; border-bottom: 1px solid var(--border); }
+  .pane[data-who="Alice"] h2 { color: var(--alice); }
+  .pane[data-who="Bob"] h2 { color: var(--bob); }
+  .pane iframe { flex: 1; width: 100%; border: 0; display: block; }
+  #wire { height: 96px; margin: 12px 16px; padding: 6px 10px; overflow-y: auto; border-radius: 6px;
+          background: var(--log-bg); color: var(--log-fg); font: 12px/1.5 ui-monospace, monospace;
+          white-space: pre-wrap; }
+  @media (max-width: 760px) {
+    body { overflow: auto; }
+    main { flex-direction: column; }
+    .pane { min-height: 70vh; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Reactor Chat</h1>
+  <p>Two Pyret programs in two embeds. Click a chat window, type, and press Enter.
+     <code>to(Ch.outbox)</code> posts to this page, which relays to the other frame's <code>on(Ch.inbox)</code>.</p>
+</header>
+<main>
+  <section class="pane" data-who="Alice"><h2>Alice</h2><iframe title="Alice's editor"></iframe></section>
+  <section class="pane" data-who="Bob"><h2>Bob</h2><iframe title="Bob's editor"></iframe></section>
+</main>
+<div id="wire" aria-label="Messages relayed by the host page"></div>
+
+<script>
+const PROGRAM = (me) => `use context starter2024
+import js-file("/channel") as Ch
+
+ME = "${me}"
+
+fun type-key(s, k):
+  ask:
+    | not(k.action == "keydown") then: s
+    | k.symbol == "Enter" then:
+      if s.draft == "": s
+      else:
+        m = {who: ME, text: s.draft}
+        s.{draft: "", log: link(m, s.log), sent: link(m, s.sent)}
+      end
+    | k.symbol == "Backspace" then:
+      s.{draft: string-substring(s.draft, 0, num-max(0, string-length(s.draft) - 1))}
+    | string-length(k.symbol) == 1 then: s.{draft: s.draft + k.symbol}
+    | otherwise: s
+  end
+end
+
+fun show(m):
+  color = if m.who == ME: "steelblue" else: "firebrick" end
+  text(m.who + ": " + m.text, 18, color)
+end
+
+fun draw(s):
+  recent = s.log.take(num-min(10, s.log.length())).reverse()
+  lines = fold(lam(acc, m): above-align("left", acc, show(m)) end, empty-image, recent)
+  typing = text("> " + s.draft + "_", 18, "black")
+  overlay-align("left", "top", above-align("left", lines, typing),
+    rectangle(400, 280, "solid", "white"))
+end
+
+r = reactor:
+  init: {draft: "", log: empty, sent: empty},
+  on(Ch.inbox): lam(s, m): s.{log: link(m, s.log)} end,
+  to(Ch.outbox): lam(s): s.sent end,
+  on-raw-key: type-key,
+  to-draw: draw,
+  title: ME
+end
+
+r.interact()
+`;
+
+const wire = document.getElementById("wire");
+function log(line) {
+  wire.textContent += line + "\n";
+  wire.scrollTop = wire.scrollHeight;
+}
+
+// js-file("/channel") resolves to "/channel.js" and is read through these RPCs
+// (same trick as the micro:bit harness). Only that one file exists.
+const MODULE_PATH = "/channel.js";
+let moduleText = null;
+async function channelSource() {
+  if (moduleText === null) {
+    const resp = await fetch("./channel.js", { cache: "no-store" });
+    if (!resp.ok) { throw new Error("fetching channel.js failed: " + resp.status); }
+    moduleText = await resp.text();
+  }
+  return moduleText;
+}
+const norm = (p) => String(p).replace(/\\/g, "/");
+const isModule = (p) => norm(p).endsWith(MODULE_PATH);
+const rpc = {
+  fs: {
+    readFile: async (p) => { if (!isModule(p)) throw new Error("ENOENT: " + p); return channelSource(); },
+    stat: async (p) => { if (!isModule(p)) throw new Error("ENOENT: " + p); return { mtime: 1, ctime: 1, size: 1, native: {} }; },
+    exists: async (p) => isModule(p),
+    writeFile: async (p) => { throw new Error("read-only: " + p); },
+    createDir: async (p) => { throw new Error("read-only: " + p); },
+  },
+  path: {
+    join: (...ps) => ps.join("/").replace(/\/+/g, "/"),
+    resolve: (p) => p.startsWith("/") ? p : "/" + p,
+    basename: (p) => p.split("/").pop(),
+    dirname: (p) => p.split("/").slice(0, -1).join("/") || "/",
+    extname: (p) => { const b = p.split("/").pop(); const i = b.lastIndexOf("."); return i > 0 ? b.slice(i) : ""; },
+    relative: (from, to) => to,
+    "is-absolute": (p) => p.startsWith("/"),
+    isAbsolute: (p) => p.startsWith("/"),
+  },
+  process: { cwd: () => "/" },
+};
+
+async function answerRpc(frame, data) {
+  const fn = rpc[data.module] && rpc[data.module][data.method];
+  let response;
+  if (!fn) {
+    response = { resultType: "exception", exception: "Unknown method " + data.module + "." + data.method };
+  } else {
+    try { response = { resultType: "value", result: await fn(...(data.args || [])) }; }
+    catch (e) { response = { resultType: "exception", exception: String(e) }; }
+  }
+  frame.contentWindow.postMessage({
+    protocol: "pyret-rpc",
+    data: Object.assign({ type: "rpc-response", callbackId: data.callbackId }, response),
+  }, "*");
+}
+
+const params = new URLSearchParams(location.search);
+const autorun = params.get("autorun") !== "0";
+const frames = [...document.querySelectorAll(".pane")].map((pane) => {
+  const who = pane.dataset.who;
+  return { who, iframe: pane.querySelector("iframe"), program: PROGRAM(who) };
+});
+
+window.addEventListener("message", (e) => {
+  const from = frames.find((f) => f.iframe.contentWindow === e.source);
+  const d = e.data;
+  if (!from || !d || typeof d !== "object") { return; }
+  if (d.protocol === "pyret-rpc") { answerRpc(from.iframe, d.data); return; }
+  if (d.protocol === "pyret-channel" && d.type === "post") {
+    for (const to of frames) {
+      if (to === from) { continue; }
+      log(`${from.who} → ${to.who}  ${JSON.stringify(d.payload)}`);
+      to.iframe.contentWindow.postMessage({ protocol: "pyret-channel", type: "deliver", payload: d.payload }, "*");
+    }
+    return;
+  }
+  if (d.protocol === "pyret" && d.data && d.data.type === "pyret-init") {
+    from.iframe.contentWindow.postMessage({ type: "gainControl" }, "*");
+    const state = {
+      editorContents: from.program,
+      // A string here makes CPO load and run it as part of the reset.
+      definitionsAtLastRun: autorun ? from.program : false,
+      interactionsSinceLastRun: [],
+      replContents: "",
+      messageNumber: 0,
+    };
+    from.iframe.contentWindow.postMessage({ protocol: "pyret", data: { type: "reset", state: JSON.stringify(state) } }, "*");
+    log(`${from.who}: editor ready${autorun ? ", running" : ""}`);
+  }
+});
+
+for (const f of frames) {
+  f.iframe.src = "./editor.embed.html#footerStyle=hide&warnOnExit=false";
+}
+</script>
+</body>
+</html>

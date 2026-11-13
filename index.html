@@ -84,6 +84,14 @@
          <code>ts-table-types</code> experiment.</p>
     </a>
 
+    <a class="card" href="./reactor-chat/chat.html">
+      <h2>Reactor chat &mdash; two programs, one page</h2>
+      <p>Two embedded editors each run a chat reactor. A message leaves one through an event
+         sink (<code>to(Ch.outbox)</code>), the host page relays it, and it arrives in the other
+         through an event source (<code>on(Ch.inbox)</code>). Click a chat window, type, press
+         Enter. From the <code>reactor-custom-events</code> experiment.</p>
+    </a>
+
     <a class="card" href="https://github.com/jpolitz/pyret-lang/releases/tag/pyret-cli-2026-08-15">
       <h2>Pyret CLI &mdash; single-executable downloads</h2>
       <p>Standalone <code>pyret</code> binaries for macOS (arm64/x64), Linux (x64/arm64) and
@@ -106,7 +114,7 @@
     <footer>
       Built from <a href="https://github.com/jpolitz/pyret-lang">jpolitz/pyret-lang</a>
       (<code>lezer</code>, <code>interp-backend</code>, <code>ts-table-types</code>,
-      <code>cli-binary</code>) and
+      <code>cli-binary</code>, <code>reactor-custom-events</code>) and
       <a href="https://github.com/jpolitz/pyret">jpolitz/pyret</a> (<code>promise-rederive</code>,
       <code>repartee-repl</code>).
       Each demo directory carries a README with its provenance and rebuild steps.
