@@ -1,0 +1,72 @@
+// MakeCode (makecode.microbit.org) streamer — emits the SAME CSV line over BOTH
+// USB serial AND Bluetooth Nordic UART, so one firmware serves both transports.
+//   ax, ay, az, temperature-C, light-level, button-a, button-b
+//
+// TO USE:
+//   1. New project at makecode.microbit.org, switch to JavaScript, paste this.
+//   2. Add the Bluetooth extension: toolbox ▸ Extensions ▸ search "bluetooth"
+//      ▸ click the "bluetooth" tile. (Pasting JS does NOT auto-install it — you
+//      get "Cannot find name 'bluetooth'" until you do this.) It will ask to
+//      remove the "radio" extension — allow it; they can't coexist.
+//   3. Gear ▸ Project Settings ▸ set "No Pairing Required: Anyone can connect".
+//      (Web Bluetooth + JustWorks = no passkey dance on the LED grid.)
+//   4. Download ▸ flash via WebUSB. Board shows a heart when running.
+//
+// The USB `serial.writeLine` path keeps the existing js-file/Web Serial harness
+// working unchanged; `bluetooth.uartWriteLine` adds the BLE path.
+//
+// It also listens (on both transports) for newline-terminated commands:
+//   T:<text>            scroll text
+//   L:<25 digits 0-9>   set every LED's brightness, row-major
+//   P:<hz>              hold a pitch on the speaker; P:0 is silence
+//   N:<hz>,<ms>         play one note
+
+bluetooth.startUartService()
+basic.showIcon(IconNames.Heart)
+
+function handleCommand(cmd: string) {
+    if (cmd.substr(0, 2) == "T:") {
+        basic.showString(cmd.substr(2))
+    } else if (cmd.substr(0, 2) == "L:" && cmd.length >= 27) {
+        for (let i = 0; i < 25; i++) {
+            const d = parseInt(cmd.charAt(2 + i))
+            led.plotBrightness(i % 5, Math.idiv(i, 5), Math.idiv(d * 255, 9))
+        }
+    } else if (cmd.substr(0, 2) == "P:") {
+        const hz = parseInt(cmd.substr(2))
+        if (hz > 0) {
+            music.ringTone(hz)
+        } else {
+            music.rest(1)
+        }
+    } else if (cmd.substr(0, 2) == "N:") {
+        const parts = cmd.substr(2).split(",")
+        const hz = parseInt(parts[0])
+        const ms = parseInt(parts[1])
+        // playTone blocks; run it off the command handler.
+        control.inBackground(function () {
+            music.playTone(hz, ms)
+        })
+    }
+}
+
+serial.onDataReceived(serial.delimiters(Delimiters.NewLine), function () {
+    handleCommand(serial.readUntil(serial.delimiters(Delimiters.NewLine)))
+})
+bluetooth.onUartDataReceived(serial.delimiters(Delimiters.NewLine), function () {
+    handleCommand(bluetooth.uartReadUntil(serial.delimiters(Delimiters.NewLine)))
+})
+
+basic.forever(function () {
+    const line =
+        input.acceleration(Dimension.X) + "," +
+        input.acceleration(Dimension.Y) + "," +
+        input.acceleration(Dimension.Z) + "," +
+        input.temperature() + "," +
+        input.lightLevel() + "," +
+        (input.buttonIsPressed(Button.A) ? 1 : 0) + "," +
+        (input.buttonIsPressed(Button.B) ? 1 : 0)
+    serial.writeLine(line)
+    bluetooth.uartWriteLine(line)
+    basic.pause(100)
+})
