@@ -32,6 +32,8 @@
       table { border-collapse: collapse; width:100%; font-size:13.5px; }
       td { border-top:1px solid var(--line); padding:6px 8px 6px 0; vertical-align:top; }
       td:first-child { color: var(--dim); white-space:nowrap; width:1%; padding-right:16px; }
+      pre { background: var(--panel); border-radius:6px; padding:10px; overflow-x:auto; margin:8px 0; }
+      pre code { background:none; padding:0; overflow-wrap:normal; }
       footer { margin-top:32px; padding-top:16px; border-top:1px solid var(--line); color: var(--faint); font-size:12.5px; }
     </style>
   </head>
@@ -74,18 +76,25 @@ double(21)
           <span class="status" id="go-status"></span>
         </div>
       </li>
-      <li>In the vscode.dev tab, open the Command Palette (<code>Ctrl+Shift+P</code> / <code>Cmd+Shift+P</code>),
-        run <strong>Developer: Install Extension from Location…</strong>, and paste this URL:
+      <li>vscode.dev only installs extensions from the Marketplace or from <code>localhost</code>, so serve this
+        build locally. In a terminal:
+<pre><code>curl -LO https://jpolitz.github.io/pyret-demos/launcher/pyret-parley-0.44.100.vsix
+unzip -q pyret-parley-0.44.100.vsix -d pyret-parley
+npx serve@14.2.4 --cors -l 5123 pyret-parley/extension</code></pre>
+        Then, in the vscode.dev tab, open the Command Palette (<code>Ctrl+Shift+P</code> / <code>Cmd+Shift+P</code>),
+        run <strong>Developer: Install Extension from Location…</strong>, and paste:
         <div class="row">
-          <code id="loc">https://jpolitz.github.io/pyret-demos/launcher/extension/</code>
+          <code id="loc">http://localhost:5123/</code>
           <button class="secondary" id="copy-loc">Copy URL</button>
           <span class="status" id="loc-status"></span>
         </div>
-      </li>
+        Chrome will ask to let vscode.dev access your local network. Allow it. vscode.dev opens in Restricted
+        Mode, so if the extension shows as disabled, click <strong>Restricted Mode</strong> in the status bar and
+        trust the workspace.</li>
       <li>Right after installing, the extension should show <em>&ldquo;Import your code from code.pyret.org?&rdquo;</em>.
-        It will preview the URL you just pasted, because that's on your clipboard now. That's expected, and it shows
-        the extension started. <strong>Note whether the prompt appeared without reloading the page.</strong> That's
-        the main open question this build is meant to answer. Click <strong>Cancel</strong>.</li>
+        It will preview <code>http://localhost:5123/</code>, because that's on your clipboard now. That's expected, and it shows
+        the extension started. <strong>Note whether the prompt appeared on its own, only after trusting the
+        workspace, or only after reloading the page.</strong> That's the main open question this build is meant to answer. Click <strong>Cancel</strong>.</li>
       <li>Come back here and click <strong>Work on GitHub</strong> again. In the new tab the extension is already
         installed, and the prompt previews your program. Click <strong>Import</strong>, accept the file name, and the
         Pyret editor opens.</li>
@@ -96,7 +105,8 @@ double(21)
     <h2>Downloads</h2>
     <table>
       <tr><td>Version</td><td><code>0.44.100</code> (a dev version number, higher than the Marketplace release)</td></tr>
-      <tr><td>vscode.dev</td><td>Install from location: <code>https://jpolitz.github.io/pyret-demos/launcher/extension/</code></td></tr>
+      <tr><td>vscode.dev</td><td>Install from location <code>http://localhost:5123/</code> after serving the unzipped VSIX (step 3).
+        A GitHub Pages URL doesn't work: vscode.dev's Content Security Policy only allows <code>localhost</code> and Microsoft hosts.</td></tr>
       <tr><td>VSIX</td><td><a href="./pyret-parley-0.44.100.vsix">pyret-parley-0.44.100.vsix</a> (13.4 MB), for desktop
         VS Code: <strong>Extensions: Install from VSIX…</strong></td></tr>
       <tr><td>SHA-256</td><td><code>cfef75813ac74b131cd6bf8dc44e3307e2641622095d04376a163378c4a2210b</code></td></tr>

@@ -13,10 +13,11 @@ version `0.44.100`) that adds clipboard import for the launcher repository
   would do: it copies the program, then opens `https://vscode.dev/github/jpolitz/pyret-launcher`.
 - `pyret-parley-0.44.100.vsix`: the packaged extension.
   SHA-256 `cfef75813ac74b131cd6bf8dc44e3307e2641622095d04376a163378c4a2210b`.
-- `extension/`: the VSIX's `extension/` directory, unzipped unchanged. vscode.dev's
-  **Developer: Install Extension from Location…** loads it from
-  `https://jpolitz.github.io/pyret-demos/launcher/extension/`. This works because GitHub Pages sends
-  `Access-Control-Allow-Origin: *`.
+- No unpacked copy. vscode.dev's Content Security Policy (`connect-src`) allows only `localhost` and
+  Microsoft/Marketplace hosts, so **Install Extension from Location** can't load from GitHub Pages
+  ("Cannot find a valid extension from the location"). vscode.dev also has no Install-from-VSIX command.
+  Testers unzip the VSIX and serve `extension/` with `npx serve@14.2.4 --cors -l 5123`, then install from
+  `http://localhost:5123/`. Chrome asks for local-network access the first time.
 
 ## Provenance
 
@@ -33,5 +34,7 @@ version `0.44.100`) that adds clipboard import for the launcher repository
 - Before packaging: Playwright against VS Code for the Web 1.129.1 (`@vscode/test-web`), with the launcher
   fixture loaded as the workspace. Checked: the preview is shown, the editor's contents match the clipboard
   exactly, a reload with the same clipboard doesn't prompt, and new clipboard text prompts again.
-- **Not verified:** installing this build on real vscode.dev, and whether the prompt appears right after
+- Install from `http://localhost:5123/` (served by `npx serve@14.2.4 --cors`) succeeds on real vscode.dev in
+  headless Chromium with local-network access granted. The extension was installed into a bare vscode.dev window.
+- **Not verified:** the import prompt on real vscode.dev, since opening the launcher repo needs a GitHub login, and whether the prompt appears right after
   installing without a reload.
