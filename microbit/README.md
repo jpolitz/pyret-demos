@@ -54,4 +54,5 @@ lines, recording writes). No console errors.
 - Example 1: tilt moves the LED dot; A → `P:740`, tilt left → `P:140`, A → `P:0`.
 - Example 2: `T:22C`, then `T:23C` only when the temperature changes.
 
-On a real board, 2026-11-18: Joe confirmed the speaker works.
+On a real board, 2026-11-18: Joe confirmed the speaker works with the MicroPython firmware
+over USB serial. The MakeCode firmware's speaker commands (and Bluetooth) are untested.
