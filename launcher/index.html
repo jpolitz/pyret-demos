@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pyret launcher test build</title>
+    <style>
+      :root { --ink:#1b1f24; --dim:#61676f; --faint:#8b929b; --line:#d8dce3; --accent:#2b6cb0; --panel:#f6f7f9; --bg:#fff; }
+      @media (prefers-color-scheme: dark) {
+        :root { --ink:#e6e8eb; --dim:#aab1ba; --faint:#7d858f; --line:#3a4049; --accent:#6ea8e6; --panel:#22262c; --bg:#16191d; }
+      }
+      * { box-sizing: border-box; }
+      body { font: 15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color: var(--ink); background: var(--bg);
+             max-width: 760px; margin: 0 auto; padding: 40px 16px 60px; }
+      h1 { font-size: 22px; margin: 0 0 6px; }
+      h2 { font-size: 16px; margin: 30px 0 8px; }
+      .sub { color: var(--faint); margin: 0 0 22px; }
+      a { color: var(--accent); }
+      .banner { border:1px solid #edd9ac; background:#fdf4e3; color:#6b4e05;
+                border-radius:8px; padding:12px 14px; margin:0 0 22px; font-size:13.5px; }
+      @media (prefers-color-scheme: dark) { .banner { background:#3a2f17; border-color:#6b5524; color:#f0d9a6; } }
+      ol { padding-left: 22px; } li { margin: 0 0 10px; }
+      code { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12.5px;
+             background: var(--panel); padding:1px 5px; border-radius:3px; overflow-wrap:anywhere; }
+      textarea { width:100%; min-height:150px; font: 13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+                 color: var(--ink); background: var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px; }
+      button { font: inherit; font-size:14px; padding:7px 14px; border-radius:6px; cursor:pointer;
+               border:1px solid var(--accent); background: var(--accent); color:#fff; }
+      button.secondary { background: transparent; color: var(--accent); }
+      .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:10px 0; }
+      .status { color: var(--dim); font-size:13px; }
+      table { border-collapse: collapse; width:100%; font-size:13.5px; }
+      td { border-top:1px solid var(--line); padding:6px 8px 6px 0; vertical-align:top; }
+      td:first-child { color: var(--dim); white-space:nowrap; width:1%; padding-right:16px; }
+      footer { margin-top:32px; padding-top:16px; border-top:1px solid var(--line); color: var(--faint); font-size:12.5px; }
+    </style>
+  </head>
+  <body>
+    <h1>Pyret &ldquo;Work on GitHub&rdquo; launcher &mdash; test build</h1>
+    <p class="sub">A development build of the Pyret VS Code extension that imports code from code.pyret.org into
+      a Pyret editor on <a href="https://vscode.dev">vscode.dev</a>.</p>
+
+    <div class="banner">
+      <strong>Experimental, largely AI-generated, and for testing only.</strong>
+      This isn't the Marketplace extension, and code.pyret.org doesn't have the button yet. The button
+      below plays its part.
+    </div>
+
+    <h2>How it's meant to work</h2>
+    <p>code.pyret.org copies the student's program to the clipboard and opens the
+      <a href="https://github.com/jpolitz/pyret-launcher">launcher repository</a> in vscode.dev. The launcher
+      recommends the Pyret extension. Once the extension is installed, it offers to import the clipboard into a
+      new <code>.arr</code> file and opens that file in the Pyret editor. Committing saves it to a fork on
+      GitHub. Forks of a public repository are public.</p>
+
+    <h2>Try it</h2>
+    <ol>
+      <li><strong>Uninstall the Marketplace Pyret extension</strong> in vscode.dev if you have it. This build
+        uses the same ID (<code>PyretProgrammingLanguage.pyret-parley</code>).</li>
+      <li>Edit the program below if you like, then click <strong>Work on GitHub</strong>. That copies the program
+        and opens the launcher in a new tab.
+        <textarea id="prog" spellcheck="false" aria-label="Program to copy">use context starter2024
+
+fun double(n):
+  n * 2
+where:
+  double(3) is 6
+end
+
+double(21)
+</textarea>
+        <div class="row">
+          <button id="go">Work on GitHub</button>
+          <span class="status" id="go-status"></span>
+        </div>
+      </li>
+      <li>In the vscode.dev tab, open the Command Palette (<code>Ctrl+Shift+P</code> / <code>Cmd+Shift+P</code>),
+        run <strong>Developer: Install Extension from Location…</strong>, and paste this URL:
+        <div class="row">
+          <code id="loc">https://jpolitz.github.io/pyret-demos/launcher/extension/</code>
+          <button class="secondary" id="copy-loc">Copy URL</button>
+          <span class="status" id="loc-status"></span>
+        </div>
+      </li>
+      <li>Right after installing, the extension should show <em>&ldquo;Import your code from code.pyret.org?&rdquo;</em>.
+        It will preview the URL you just pasted, because that's on your clipboard now. That's expected, and it shows
+        the extension started. <strong>Note whether the prompt appeared without reloading the page.</strong> That's
+        the main open question this build is meant to answer. Click <strong>Cancel</strong>.</li>
+      <li>Come back here and click <strong>Work on GitHub</strong> again. In the new tab the extension is already
+        installed, and the prompt previews your program. Click <strong>Import</strong>, accept the file name, and the
+        Pyret editor opens.</li>
+    </ol>
+    <p>If no prompt appears, run <strong>Pyret: Import code from code.pyret.org (clipboard)</strong> from the
+      Command Palette.</p>
+
+    <h2>Downloads</h2>
+    <table>
+      <tr><td>Version</td><td><code>0.44.100</code> (a dev version number, higher than the Marketplace release)</td></tr>
+      <tr><td>vscode.dev</td><td>Install from location: <code>https://jpolitz.github.io/pyret-demos/launcher/extension/</code></td></tr>
+      <tr><td>VSIX</td><td><a href="./pyret-parley-0.44.100.vsix">pyret-parley-0.44.100.vsix</a> (13.4 MB), for desktop
+        VS Code: <strong>Extensions: Install from VSIX…</strong></td></tr>
+      <tr><td>SHA-256</td><td><code>cfef75813ac74b131cd6bf8dc44e3307e2641622095d04376a163378c4a2210b</code></td></tr>
+      <tr><td>Source</td><td><a href="https://github.com/jpolitz/pyret-lang/commit/1006cb831">jpolitz/pyret-lang@1006cb831</a>
+        on branch <a href="https://github.com/jpolitz/pyret-lang/tree/vscode-launcher-import"><code>vscode-launcher-import</code></a>
+        (<code>vscode/src/launcher.ts</code>)</td></tr>
+      <tr><td>Launcher repo</td><td><a href="https://github.com/jpolitz/pyret-launcher">jpolitz/pyret-launcher</a>
+        &middot; <a href="https://vscode.dev/github/jpolitz/pyret-launcher">open in vscode.dev</a></td></tr>
+      <tr><td>Built</td><td>2026-11-18</td></tr>
+    </table>
+
+    <h2>Known gaps</h2>
+    <ul>
+      <li>Firefox and Safari may refuse the clipboard read. The extension then offers an empty file to paste into.</li>
+      <li>The &ldquo;import into my fork&rdquo; path for repeat visits hasn't been tested on vscode.dev.</li>
+      <li>vscode.dev and github.dev store data separately, so this build's state doesn't carry from one to the other.</li>
+    </ul>
+
+    <footer><a href="../">All Pyret demos</a> &middot; Source and provenance: <a href="./README.md">README.md</a></footer>
+
+    <script>
+      const LAUNCHER = "https://vscode.dev/github/jpolitz/pyret-launcher";
+      function say(id, msg) { document.getElementById(id).textContent = msg; }
+      // What code.pyret.org's button would do: copy first, inside the click, then open.
+      document.getElementById("go").addEventListener("click", async () => {
+        const text = document.getElementById("prog").value;
+        let copied = false;
+        try { await navigator.clipboard.writeText(text); copied = true; } catch (e) { console.warn(e); }
+        window.open(LAUNCHER, "_blank");
+        say("go-status", copied ? "Copied. The launcher is opening in a new tab."
+                                : "Couldn't copy automatically. Select the program and copy it by hand.");
+      });
+      document.getElementById("copy-loc").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(document.getElementById("loc").textContent); say("loc-status", "Copied."); }
+        catch (e) { say("loc-status", "Copy it by hand."); }
+      });
+    </script>
+  </body>
+</html>
